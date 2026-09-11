@@ -20,29 +20,11 @@ import logging
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-import stripe
-from stripe import _http_client
-
 from app import config
+from app.stripe_client import stripe
 
 logger = logging.getLogger("alertes.formatage")
 
-# Posée ici, dans le seul module qui appelle Stripe, et non dans serveur.py : sinon
-# tout point d'entrée qui n'importe pas le serveur (outils/tester_telegram.py, un
-# script de diagnostic) perd silencieusement l'enrichissement et affiche des
-# identifiants bruts. Constaté le 11/09/2026 sur la première alerte de test réelle.
-stripe.api_key = config.STRIPE_API_KEY
-
-# Par défaut, la bibliothèque Stripe attend 80 s par appel et réessaie 2 fois : un
-# seul enrichissement pourrait donc bloquer 4 minutes. Or on est sur le chemin
-# critique du webhook, AVANT que l'évènement soit marqué comme traité — Stripe
-# abandonnerait la livraison bien avant et la rejouerait, faisant partir deux
-# alertes identiques dans le groupe. L'enrichissement n'est qu'un confort : mieux
-# vaut afficher « cus_123 » que d'annoncer deux fois le même client.
-stripe.max_network_retries = 0
-stripe.default_http_client = _http_client.new_default_http_client(
-    timeout=config.STRIPE_TIMEOUT
-)
 
 # Devises sans sous-unité : leur montant n'est PAS en centimes, le diviser par 100
 # afficherait 100x trop peu. Liste Stripe des "zero-decimal currencies".
@@ -292,7 +274,7 @@ def _bloc(titre: str, lignes: list[str], url: str | None = None,
     """Le message complet, en HTML Telegram. Les lignes arrivent déjà échappées
     côté valeurs (voir _echapper) et peuvent porter nos propres <b> et <i>."""
     corps = "\n".join(lignes)
-    message = f"<b>{titre}</b>\n{corps}"
+    message = f"<b>{titre}</b>\n{corps}" if corps else f"<b>{titre}</b>"
     if url:
         message += f'\n<a href="{url}">{libelle_lien}</a>'
     return message
@@ -301,7 +283,8 @@ def _bloc(titre: str, lignes: list[str], url: str | None = None,
 # --- un formateur par évènement ------------------------------------------------
 
 def _message_nouvel_abonnement(
-    objet: dict, livemode: bool, analyse: dict, cumul: str | None = None
+    objet: dict, livemode: bool, analyse: dict, cumul: str | None = None,
+    etat: str | None = None,
 ) -> str:
     lignes_formules, total = analyse["lignes"], analyse["total_texte"]
     lignes = [_nom_client(objet.get("customer"))]
@@ -324,11 +307,19 @@ def _message_nouvel_abonnement(
     if debut:
         lignes.append(f"Démarré le {debut}")
 
-    if cumul:
-        lignes.append(f"— {cumul}")
+    # Le titre porte le compte du jour : c'est la seule ligne visible dans la
+    # notification Telegram. En mode test, il annonce quand même un abonnement —
+    # un titre « aucune souscription réelle aujourd'hui » sous une fusée serait
+    # une alerte qui se contredit elle-même.
+    if etat:
+        titre = f"🎉 Nouvel abonnement (test) · {etat}"
+    elif cumul:
+        titre = f"🎉 {cumul}"
+    else:
+        titre = "🎉 Nouvel abonnement"
 
     return _bloc(
-        "🎉 Nouvel abonnement",
+        titre,
         lignes,
         _lien_dashboard(livemode, f"subscriptions/{objet.get('id')}"),
         "Voir dans Stripe",
@@ -381,22 +372,23 @@ def evaluer(evenement: dict) -> dict | None:
     return {"abonnement": retenu, "livemode": bool(evenement.get("livemode"))}
 
 
-def rendre(contexte: dict, cumul: str | None = None) -> str:
+def rendre(contexte: dict, cumul: str | None = None, etat: str | None = None) -> str:
     """Le message Telegram d'un abonnement retenu. C'est ici, et seulement ici, que
     l'on interroge Stripe pour remplacer les identifiants par des noms lisibles."""
     message = _message_nouvel_abonnement(
-        contexte["abonnement"], contexte["livemode"], analyser(contexte), cumul
+        contexte["abonnement"], contexte["livemode"], analyser(contexte), cumul, etat
     )
     if contexte["livemode"]:
         return message
     return f"🧪 <i>mode test Stripe</i>\n{message}"
 
 
-def formater(evenement: dict, cumul: str | None = None) -> str | None:
+def formater(evenement: dict, cumul: str | None = None,
+             etat: str | None = None) -> str | None:
     """Les deux étapes d'un coup. Pratique pour les tests et les outils ; le serveur,
     lui, passe par evaluer() puis rendre() pour compter la souscription entre les deux."""
     contexte = evaluer(evenement)
-    return rendre(contexte, cumul) if contexte else None
+    return rendre(contexte, cumul, etat) if contexte else None
 
 
 # --- totaux et récapitulatifs --------------------------------------------------
@@ -413,17 +405,22 @@ def libelle_jour(jour: datetime) -> str:
 
 
 def _formuler_groupes(groupes: dict) -> list[str]:
-    """['57,00 € / mois', '190,00 € / an'] — un montant par nature de revenu.
+    """['859,78 €', '474,89 $'] — le montant SOUSCRIT, une somme par devise.
 
-    Le mensuel et l'annuel ne sont jamais additionnés : 19 €/mois et 190 €/an ne
-    font pas 209 €, ce chiffre ne voudrait rien dire.
+    Les périodicités sont additionnées entre elles (un annuel à 190 € et un mensuel
+    à 19 € valent 209 € de souscriptions ce jour-là), mais jamais les devises :
+    19 € et 19 $ ne font pas 38.
+
+    Ce n'est PAS de l'argent encaissé, et le libellé ne doit jamais le laisser
+    croire : un abonnement démarré en période d'essai ou avec un premier mois
+    offert compte ici pour son prix catalogue alors que Stripe n'a rien prélevé.
+    Le vrai volume net viendra d'une autre source.
     """
     formules = []
-    for (devise, periodicite), total in sorted(groupes.items()):
+    for devise, total in sorted(groupes.items()):
         montant = _montant(total, devise)
-        if not montant:
-            continue
-        formules.append(f"{montant} {periodicite}".strip() if periodicite else montant)
+        if montant:
+            formules.append(montant)
     return formules
 
 
@@ -432,63 +429,41 @@ def _souscriptions_au_pluriel(nombre: int) -> str:
 
 
 def phrase_cumul(totaux_jour: dict) -> str:
-    """La ligne ajoutée en bas d'une alerte réelle : où en est la journée, celle-ci
-    comprise. Au premier abonnement du jour, le montant est déjà juste au-dessus :
-    inutile de le répéter."""
+    """Le TITRE d'une alerte réelle : « 12e souscription · 929,76 € + 559,87 $ ».
+
+    Placé en première ligne, et pas en bas : Telegram n'affiche que le début du
+    message dans sa notification. L'essentiel — combien aujourd'hui, pour quel
+    volume — doit donc tenir là, sans avoir à ouvrir la conversation.
+    """
     nombre = totaux_jour.get("nombre") or 0
     ordinal = "1re" if nombre <= 1 else f"{nombre}e"
-    base = f"<i>{ordinal} souscription aujourd'hui</i>"
     montants = _formuler_groupes(totaux_jour.get("groupes") or {})
-    if nombre > 1 and montants:
-        if len(montants) <= 2:
-            return (f"<i>{ordinal} souscription aujourd'hui · "
-                    f"{' + '.join(montants)} au total</i>")
-        # Même règle que les récapitulatifs : au-delà de deux natures de revenu,
-        # une par ligne. ID by Rivoli en cumule jusqu'à cinq.
-        détail = "\n".join(f"    • {m}" for m in montants)
-        return f"<i>{ordinal} souscription aujourd'hui, au total :</i>\n{détail}"
-    return base
+    if montants:
+        return f"{ordinal} souscription du jour · {' + '.join(montants)} souscrits"
+    return f"{ordinal} souscription du jour"
 
 
 def phrase_etat_journee(totaux_jour: dict) -> str:
-    """La même information, mais formulée sans s'inclure : posée au bas des alertes
-    du mode test, qui ne sont jamais comptées. Dire « 3e souscription aujourd'hui »
-    sur un abonnement de test laisserait croire qu'il entre dans les chiffres."""
+    """Le même titre pour une alerte du mode test, qui n'est jamais comptée : il
+    annonce l'état réel de la journée sans s'y inclure."""
     nombre = totaux_jour.get("nombre") or 0
-    if nombre == 0:
-        return "<i>Journée en cours : aucune souscription réelle</i>"
     montants = _formuler_groupes(totaux_jour.get("groupes") or {})
-    if len(montants) > 2:
-        détail = "\n".join(f"    • {m}" for m in montants)
-        return f"<i>Journée en cours : {_souscriptions_au_pluriel(nombre)}</i>\n{détail}"
-    detail = f" · {' + '.join(montants)}" if montants else ""
-    return f"<i>Journée en cours : {_souscriptions_au_pluriel(nombre)}{detail}</i>"
-
-
-def _lignes_totaux(totaux: dict, intitule: str) -> list[str]:
-    nombre = totaux.get("nombre") or 0
     if nombre == 0:
-        return [f"{intitule} : aucune souscription."]
+        return "aucune souscription réelle aujourd'hui"
+    detail = f" · {' + '.join(montants)} souscrits" if montants else ""
+    return f"journée en cours : {_souscriptions_au_pluriel(nombre)}{detail}"
 
-    montants = _formuler_groupes(totaux.get("groupes") or {})
-    ligne = f"{intitule} : <b>{_souscriptions_au_pluriel(nombre)}</b>"
-    if len(montants) <= 2:
-        # Une ou deux natures de revenu tiennent sur la même ligne.
-        if montants:
-            ligne += f" · {' + '.join(montants)}"
-        lignes = [ligne]
-    else:
-        # Au-delà, les mettre bout à bout donne une ligne illisible : ID by Rivoli
-        # facture en euros et en dollars, à la période et au mois. Une par ligne.
-        lignes = [ligne] + [f"    • {m}" for m in montants]
 
-    # Ne jamais laisser croire qu'un total est complet quand il ne l'est pas.
+def _reserves(totaux: dict) -> list[str]:
+    """Les réserves à afficher sous un total : ce qui n'a pas pu être chiffré. Vide
+    la plupart du temps — et alors le message se réduit à son titre."""
+    lignes = []
     non_chiffrables = totaux.get("non_chiffrables") or 0
     partiels = totaux.get("partiels") or 0
     if non_chiffrables:
         lignes.append(
             f"<i>dont {non_chiffrables} sans montant fixe (tarification à paliers "
-            f"ou à l'usage), absente(s) du montant</i>"
+            f"ou à l'usage)</i>"
         )
     complements = partiels - non_chiffrables
     if complements > 0:
@@ -498,16 +473,88 @@ def _lignes_totaux(totaux: dict, intitule: str) -> list[str]:
     return lignes
 
 
-def message_point_du_jour(heure: int, totaux_jour: dict) -> str:
+def _titre_chiffre(prefixe: str, totaux: dict, volume: dict | None = None) -> str:
+    """« 📊 20h · 37 souscriptions · 3 325,13 € net ».
+
+    Souscriptions du jour et volume net encaissé, dans le titre : c'est la seule
+    ligne que Telegram affiche dans sa notification.
+    """
+    nombre = totaux.get("nombre") or 0
+    morceaux = [prefixe]
+    morceaux.append(_souscriptions_au_pluriel(nombre) if nombre else "aucune souscription")
+    encaisse = _volume_lisible(volume)
+    if encaisse:
+        morceaux.append(f"{encaisse} net")
+    return " · ".join(morceaux)
+
+
+def _volume_lisible(volume: dict | None) -> str | None:
+    """« 3 325,13 € » — None si Stripe n'a pas pu répondre. Distinguer « on ne sait
+    pas » de « zéro » est essentiel : un récapitulatif qui annonce 0 € encaissé
+    alors que la permission manque serait un mensonge."""
+    if volume is None:
+        return None
+    montants = _formuler_groupes(volume)
+    return " + ".join(montants) if montants else _montant(0, "eur")
+
+
+def ligne_indicateurs(etat: dict | None) -> list[str]:
+    """La deuxième ligne : MRR et abonnés actifs. Vide tant que Stripe ne donne pas
+    accès aux abonnements."""
+    if not etat:
+        return []
+    morceaux = []
+    # « ≈ » : ce MRR est recalculé ici, pas lu chez Stripe. Il s'écarte de quelques
+    # pourcents du tableau de bord (taux de change fixe, règles internes de Stripe
+    # non documentées). Le signe disparaîtra le jour où l'Analytics API de Stripe
+    # sera ouverte sur ce compte.
+    mrr = etat.get("mrr_eur")
+    if mrr is not None:
+        morceaux.append(f"MRR ≈ <b>{_montant(mrr, 'eur')}</b>")
+    else:
+        # Une devise non convertible : on montre le détail plutôt que rien.
+        detail = _formuler_groupes(etat.get("mrr") or {})
+        if detail:
+            morceaux.append(f"MRR <b>{' + '.join(detail)}</b>")
+    abonnes = etat.get("abonnes")
+    if abonnes is not None:
+        morceaux.append(f"<b>{abonnes}</b> abonnés actifs")
+    return [" · ".join(morceaux)] if morceaux else []
+
+
+def message_point_du_jour(heure: int, totaux_jour: dict,
+                          volume_net: dict | None = None,
+                          indicateurs: dict | None = None) -> str:
     """Le récapitulatif intermédiaire (12h, 16h, 18h, 20h, 22h) : la journée en cours,
-    depuis minuit."""
-    return _bloc(f"📊 Point du jour — {heure}h", _lignes_totaux(totaux_jour, "Depuis minuit"))
+    depuis minuit.
+
+    Tout tient dans le titre, pour être lisible dans la notification. Le corps ne
+    porte que les réserves éventuelles (souscriptions non chiffrables) : le répéter
+    en entier ferait un message qui se dit deux fois.
+    """
+    return _bloc(_titre_chiffre(f"📊 {heure}h", totaux_jour, volume_net),
+                 ligne_indicateurs(indicateurs) + _reserves(totaux_jour))
 
 
-def message_bilan(jour: datetime, totaux_jour: dict, totaux_semaine: dict) -> str:
+def message_bilan(jour: datetime, totaux_jour: dict, totaux_semaine: dict,
+                  volume_net: dict | None = None, indicateurs: dict | None = None,
+                  volume_semaine: dict | None = None) -> str:
     """Le bilan de minuit : la journée qui vient de se terminer, plus les sept
     derniers jours glissants."""
-    lignes = _lignes_totaux(totaux_jour, "Journée")
-    lignes.append("")
-    lignes += _lignes_totaux(totaux_semaine, "7 derniers jours")
-    return _bloc(f"🌙 Bilan du {libelle_jour(jour)}", lignes)
+    # Les réserves de la journée portent leur intitulé : sans lui, elles se collent
+    # à la ligne des 7 jours et se lisent comme si elles la concernaient — les deux
+    # blocs ayant exactement la même formulation.
+    lignes = ligne_indicateurs(indicateurs)
+    lignes += [f"<i>Journée : {r[3:]}" if r.startswith("<i>") else r
+               for r in _reserves(totaux_jour)]
+    if lignes:
+        lignes.append("")
+
+    semaine = [f"7 derniers jours : <b>{_souscriptions_au_pluriel(totaux_semaine.get('nombre') or 0)}</b>"]
+    encaisse = _volume_lisible(volume_semaine)
+    if encaisse:
+        semaine[0] += f" · <b>{encaisse}</b> net"
+    lignes += semaine + _reserves(totaux_semaine)
+
+    return _bloc(_titre_chiffre(f"🌙 Bilan du {libelle_jour(jour)}", totaux_jour, volume_net),
+                 lignes)

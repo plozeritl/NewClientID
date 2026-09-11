@@ -47,7 +47,7 @@ def main() -> int:
     journal.initialiser(config.DB_PATH)
     jour = datetime.now(alertes.FUSEAU).date().isoformat()
     etat = alertes.phrase_etat_journee(journal.totaux(config.DB_PATH, jour, jour))
-    texte = alertes.formater(EXEMPLE, etat)
+    texte = alertes.formater(EXEMPLE, etat=etat)
     print("Message qui va être envoyé :\n")
     print(texte)
     print()

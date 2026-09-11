@@ -135,9 +135,16 @@ def enregistrer_souscription(
 def totaux(db_path: Path, jour_debut: str, jour_fin: str) -> dict:
     """Compte et montants entre deux dates Paris incluses ('AAAA-MM-JJ').
 
-    Les montants sont regroupés par (devise, périodicité) et JAMAIS additionnés
-    entre groupes : 19 €/mois et 190 €/an ne font pas 209 € — ce sont deux natures
-    de revenu différentes, les mélanger produirait un chiffre qui ne veut rien dire.
+    Les montants sont regroupés par DEVISE, et additionnés à l'intérieur d'une
+    devise quelle que soit la périodicité : ce qu'on mesure est le montant SOUSCRIT
+    ce jour-là, pas un revenu récurrent projeté.
+
+    Ce n'est pas de l'argent encaissé, et le libellé des messages ne doit jamais le
+    laisser croire : un abonnement démarré en essai gratuit ou avec un premier mois
+    offert compte ici pour son prix catalogue, alors que Stripe n'a rien prélevé.
+    L'argent réellement entré est mesuré ailleurs, dans app/volume.py.
+
+    Les devises ne sont jamais mélangées : 19 € et 19 $ ne font pas 38.
 
     Deux nuances pour qu'un total ne paraisse jamais complet alors qu'il ne l'est
     pas, sans pour autant perdre du revenu connu :
@@ -157,7 +164,7 @@ def totaux(db_path: Path, jour_debut: str, jour_fin: str) -> dict:
     finally:
         conn.close()
 
-    groupes: dict[tuple[str, str], int] = {}
+    groupes: dict[str, int] = {}
     non_chiffrables = 0
     partiels = 0
     for ligne in lignes:
@@ -166,7 +173,7 @@ def totaux(db_path: Path, jour_debut: str, jour_fin: str) -> dict:
         if ligne["montant"] is None:
             non_chiffrables += 1
             continue
-        cle = (ligne["devise"] or "", ligne["periodicite"] or "")
+        cle = ligne["devise"] or ""
         groupes[cle] = groupes.get(cle, 0) + ligne["montant"]
 
     return {"nombre": len(lignes), "groupes": groupes,

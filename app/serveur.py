@@ -19,12 +19,12 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-import stripe
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
-from app import alertes, config, journal, rattrapage, recap, telegram
+from app import abonnes, alertes, config, journal, rattrapage, recap, telegram, volume
+from app.stripe_client import stripe
 
 logging.basicConfig(
     level=logging.INFO,
@@ -117,6 +117,10 @@ def health() -> JSONResponse:
                 [f"{h}h" for h in config.RECAP_HEURES] if config.RECAP_ACTIF else "désactivés"
             ),
             "rattrapage": dict(rattrapage.ETAT),
+            # Chacune de ces lignes peut manquer d'un récapitulatif sans que rien
+            # ne casse : ici on voit laquelle, et pourquoi.
+            "volume_net": dict(volume.ETAT),
+            "mrr_et_abonnes": dict(abonnes.ETAT),
         },
     )
 
@@ -198,9 +202,9 @@ def _traiter(corps: bytes, signature: str | None) -> Response:
     # total du jour, elle doit donc déjà s'y inclure. Les abonnements du mode test
     # de Stripe ne sont jamais comptés — ils fausseraient les totaux réels.
     # Le compte du jour figure sur TOUS les messages. Sur une alerte réelle il
-    # s'inclut ("3e souscription aujourd'hui") ; sur une alerte de test il se
-    # contente d'annoncer l'état réel de la journée, sans s'y compter.
-    cumul = None
+    # s'inclut ("3e souscription du jour") ; sur une alerte de test il se contente
+    # d'annoncer l'état réel de la journée, sans s'y compter.
+    cumul = etat = None
     if contexte["livemode"]:
         abonnement = contexte["abonnement"]
         montant, devise, periodicite, partiel = alertes.resume_chiffre(contexte)
@@ -219,11 +223,11 @@ def _traiter(corps: bytes, signature: str | None) -> Response:
         cumul = alertes.phrase_cumul(journal.totaux(config.DB_PATH, jour, jour))
     else:
         aujourdhui = datetime.now(alertes.FUSEAU).date().isoformat()
-        cumul = alertes.phrase_etat_journee(
+        etat = alertes.phrase_etat_journee(
             journal.totaux(config.DB_PATH, aujourdhui, aujourdhui)
         )
 
-    texte = alertes.rendre(contexte, cumul)
+    texte = alertes.rendre(contexte, cumul, etat)
     try:
         telegram.envoyer(config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID, texte)
     except telegram.TelegramErreurTemporaire as exc:

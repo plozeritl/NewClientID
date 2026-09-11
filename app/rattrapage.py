@@ -19,9 +19,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 
-import stripe
-
-from app import alertes, config, journal, recap
+from app import alertes, config, journal, recap, stripe_client
 
 logger = logging.getLogger("alertes.rattrapage")
 
@@ -29,6 +27,16 @@ logger = logging.getLogger("alertes.rattrapage")
 # voyait que dans une ligne de log, et les compteurs restaient silencieusement
 # à zéro.
 ETAT: dict = {"execute": False, "souscriptions": 0, "probleme": None}
+
+
+def _lister_evenements(depuis: datetime):
+    """Isolé pour être remplaçable dans les tests. Client de fond : plusieurs pages,
+    avec nouvelles tentatives."""
+    return stripe_client.client_fond.v1.events.list(params={
+        "types": config.EVENEMENTS,
+        "created": {"gte": int(depuis.timestamp())},
+        "limit": 100,
+    }).auto_paging_iter()
 
 
 def _jour_de(evenement: dict) -> str:
@@ -43,7 +51,7 @@ def executer() -> int:
     if not config.RATTRAPAGE_JOURS:
         ETAT.update(execute=True, probleme="désactivé (RATTRAPAGE_JOURS=0)")
         return 0
-    if not stripe.api_key:
+    if not config.STRIPE_API_KEY:
         logger.info("Rattrapage impossible sans STRIPE_API_KEY : compteurs laissés vides.")
         ETAT.update(execute=True, probleme="STRIPE_API_KEY absente")
         return 0
@@ -61,13 +69,7 @@ def executer() -> int:
     ajoutes = 0
     vus = 0
     try:
-        evenements = stripe.Event.list(
-            types=config.EVENEMENTS,
-            created={"gte": int(depuis.timestamp())},
-            limit=100,
-        ).auto_paging_iter()
-
-        for brut in evenements:
+        for brut in _lister_evenements(depuis):
             evenement = brut.to_dict()
             vus += 1
             contexte = alertes.evaluer(evenement)
@@ -91,7 +93,7 @@ def executer() -> int:
                 montant, devise, periodicite, _jour_de(evenement), partiel,
             ):
                 ajoutes += 1
-    except stripe.PermissionError:
+    except stripe_client.stripe.PermissionError:
         # Retourne ce qui a déjà été écrit : auto_paging_iter fait plusieurs appels,
         # un refus au milieu de la pagination ne doit pas effacer le décompte.
         logger.warning(

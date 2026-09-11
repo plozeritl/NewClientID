@@ -18,7 +18,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 
-from app import alertes, config, journal, telegram
+from app import abonnes, alertes, config, journal, telegram, volume
 
 logger = logging.getLogger("alertes.recap")
 
@@ -71,10 +71,21 @@ def _totaux_semaine(dernier_jour: datetime) -> dict:
 def construire(creneau: datetime) -> str:
     """Le message d'un créneau. Minuit clôt la veille ; les autres font le point sur
     la journée en cours."""
+    # Le MRR et les abonnés actifs sont ceux de l'INSTANT : ils n'ont pas de date.
+    # Un bilan rattrapé pour avant-hier les présenterait comme ceux d'avant-hier, ce
+    # qui serait faux. On ne les met que sur les messages de la journée en cours.
+    indicateurs = abonnes.etat() if creneau.date() == _maintenant().date() else None
     if creneau.hour == 0:
         veille = creneau - timedelta(days=1)
-        return alertes.message_bilan(veille, _totaux_du_jour(veille), _totaux_semaine(veille))
-    return alertes.message_point_du_jour(creneau.hour, _totaux_du_jour(creneau))
+        return alertes.message_bilan(
+            veille, _totaux_du_jour(veille), _totaux_semaine(veille),
+            volume.net_de_la_journee(veille), indicateurs,
+            volume.net_sur_periode(veille - timedelta(days=6), veille),
+        )
+    return alertes.message_point_du_jour(
+        creneau.hour, _totaux_du_jour(creneau),
+        volume.net_de_la_journee(creneau), indicateurs,
+    )
 
 
 def _envoyer(creneau: datetime) -> bool:

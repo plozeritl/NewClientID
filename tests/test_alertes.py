@@ -26,7 +26,7 @@ os.environ["TELEGRAM_CHAT_ID"] = "-1001234567890"
 os.environ["STRIPE_API_KEY"] = ""          # pas d'enrichissement : aucun appel réseau
 os.environ["DB_PATH"] = str(Path(tempfile.mkdtemp()) / "test.db")
 
-from app import alertes, config, journal, rattrapage, recap, telegram  # noqa: E402
+from app import abonnes, alertes, config, journal, rattrapage, recap, telegram, volume  # noqa: E402
 from datetime import datetime  # noqa: E402
 from app.serveur import app  # noqa: E402
 
@@ -536,7 +536,7 @@ def test_totaux() -> None:
     _souscrire(db, "e2", 2900)
     t = journal.totaux(db, "2026-09-11", "2026-09-11")
     verifier(t["nombre"] == 2, "deux souscriptions comptées")
-    verifier(t["groupes"][("eur", "/ mois")] == 4800, "19,00 € + 29,00 € = 48,00 €")
+    verifier(t["groupes"]["eur"] == 4800, "19,00 € + 29,00 € = 48,00 €")
 
     _souscrire(db, "e2", 9999)
     t = journal.totaux(db, "2026-09-11", "2026-09-11")
@@ -549,18 +549,21 @@ def test_totaux() -> None:
     verifier(t["nombre"] == 3, "elle entre dans les 7 derniers jours")
 
 
-def test_mensuel_et_annuel_jamais_additionnes() -> None:
-    print("\nMensuel et annuel")
+def test_devises_jamais_melangees() -> None:
+    """Le volume additionne toutes les périodicités d'une même devise — un annuel à
+    190 € rapporte bien 190 € le jour où il est souscrit — mais jamais deux devises :
+    19 € et 19 $ ne font pas 38."""
+    print("\nVolume par devise")
     db = _base_neuve()
     _souscrire(db, "m1", 1900, "/ mois")
     _souscrire(db, "a1", 19000, "/ an")
+    _souscrire(db, "u1", 5000, "/ mois", devise="usd")
     t = journal.totaux(db, "2026-09-11", "2026-09-11")
-    verifier(len(t["groupes"]) == 2, "deux natures de revenu, deux groupes")
+    verifier(t["groupes"]["eur"] == 20900,
+             "mensuel et annuel d'une même devise s'additionnent (19 + 190 = 209 €)")
+    verifier(t["groupes"]["usd"] == 5000, "les dollars restent à part")
     lignes = alertes._formuler_groupes(t["groupes"])
-    verifier(any("19,00 € / mois" in l for l in lignes), "le mensuel est annoncé à part")
-    verifier(any("190,00 € / an" in l for l in lignes), "l'annuel aussi")
-    verifier(not any("209" in l for l in lignes),
-             "19 €/mois + 190 €/an ne font jamais 209 € : ce chiffre n'aurait aucun sens")
+    verifier(lignes == ["209,00 €", "50,00 $"], "un montant par devise, sans périodicité")
 
 
 def test_souscription_non_chiffrable() -> None:
@@ -570,10 +573,12 @@ def test_souscription_non_chiffrable() -> None:
     _souscrire(db, "c2", None, None)
     t = journal.totaux(db, "2026-09-11", "2026-09-11")
     verifier(t["nombre"] == 2, "elle est bien comptée")
-    verifier(t["groupes"][("eur", "/ mois")] == 1900, "mais pas ajoutée au montant")
+    verifier(t["groupes"]["eur"] == 1900, "mais pas ajoutée au montant")
     verifier(t["non_chiffrables"] == 1, "elle est signalée à part")
     texte = alertes.message_point_du_jour(16, t)
     verifier("à l'usage" in texte, "le message prévient que le montant est incomplet")
+    verifier(len(texte.split("\n")) == 2,
+             "titre + réserve, sans répéter les chiffres une seconde fois")
 
 
 def test_phrase_cumul() -> None:
@@ -582,11 +587,13 @@ def test_phrase_cumul() -> None:
     _souscrire(db, "p1", 1900)
     phrase = alertes.phrase_cumul(journal.totaux(db, "2026-09-11", "2026-09-11"))
     verifier("1re souscription" in phrase, "la première dit '1re'")
-    verifier("19,00" not in phrase, "sans répéter le montant, déjà juste au-dessus")
+    verifier("19,00 €" in phrase, "avec le volume du jour")
     _souscrire(db, "p2", 2900)
     phrase = alertes.phrase_cumul(journal.totaux(db, "2026-09-11", "2026-09-11"))
     verifier("2e souscription" in phrase, "la deuxième dit '2e'")
-    verifier("48,00 € / mois" in phrase, "et donne le cumul de la journée")
+    verifier("48,00 €" in phrase, "et le volume cumulé de la journée")
+    verifier("<" not in phrase,
+             "le cumul est un titre, pas du HTML : il sera mis en gras par _bloc")
 
 
 def test_messages_recap() -> None:
@@ -596,13 +603,18 @@ def test_messages_recap() -> None:
     texte = alertes.message_point_du_jour(16, vide)
     verifier("16h" in texte, "l'heure du point est indiquée")
     verifier("aucune souscription" in texte.lower(), "une journée vide le dit clairement")
+    verifier(texte.split("\n")[0].count("aucune souscription") == 1,
+             "et le dit dès la première ligne, seule visible dans la notification")
 
     _souscrire(db, "r1", 1900)
     _souscrire(db, "r2", 2900)
     t = journal.totaux(db, "2026-09-11", "2026-09-11")
-    texte = alertes.message_point_du_jour(20, t)
-    verifier("2 nouvelles souscriptions" in texte, "le nombre est au pluriel")
-    verifier("48,00 € / mois" in texte, "le montant cumulé y est")
+    texte = alertes.message_point_du_jour(20, t, {"eur": 332513})
+    premiere = texte.split("\n")[0]
+    verifier("2 nouvelles souscriptions" in premiere, "le nombre est sur la première ligne")
+    verifier("3 325,13 € net" in premiere, "le volume net aussi : tout est lisible sans ouvrir")
+    verifier(len(texte.split("\n")) == 1,
+             "sans MRR ni réserve, le point du jour tient sur sa seule première ligne")
 
     _souscrire(db, "r3", 1000, jour="2026-09-08")
     jour = datetime(2026, 9, 11, tzinfo=alertes.FUSEAU)
@@ -610,22 +622,28 @@ def test_messages_recap() -> None:
         jour, journal.totaux(db, "2026-09-11", "2026-09-11"),
         journal.totaux(db, "2026-09-05", "2026-09-11"),
     )
-    verifier("vendredi 11 septembre" in texte, "le bilan nomme le jour en français")
-    verifier("Journée" in texte and "7 derniers jours" in texte, "les deux périodes y sont")
+    verifier("vendredi 11 septembre" in texte.split("\n")[0], "le bilan nomme le jour")
+    verifier("2 nouvelles souscriptions" in texte.split("\n")[0],
+             "avec les chiffres de la journée dès la première ligne")
+    verifier("7 derniers jours" in texte, "et la semaine dans le corps")
     verifier("3 nouvelles souscriptions" in texte, "la semaine inclut les jours précédents")
 
 
 def _banc_recap(db, heures, instant):
-    """Prépare le décor d'un test de récapitulatif et rend une fonction de nettoyage."""
-    etat = (recap.telegram.envoyer, recap._maintenant, config.RECAP_HEURES, config.DB_PATH)
+    """Prépare le décor d'un test de récapitulatif et rend une fonction de nettoyage.
+    Le MRR et le volume net sont remplacés par des valeurs fixes : aucun réseau."""
+    etat = (recap.telegram.envoyer, recap._maintenant, config.RECAP_HEURES, config.DB_PATH,
+            recap.abonnes.etat, recap.volume.net_sur_periode)
     envois: list = []
     recap.telegram.envoyer = lambda jeton, chat_id, texte: envois.append(texte)
     recap._maintenant = lambda: instant
+    recap.abonnes.etat = lambda: {"mrr": {"eur": 100}, "mrr_eur": 100, "abonnes": 1}
+    recap.volume.net_sur_periode = lambda a, b: {"eur": 0}
     config.RECAP_HEURES, config.DB_PATH = heures, db
 
     def nettoyer():
-        (recap.telegram.envoyer, recap._maintenant,
-         config.RECAP_HEURES, config.DB_PATH) = etat
+        (recap.telegram.envoyer, recap._maintenant, config.RECAP_HEURES, config.DB_PATH,
+         recap.abonnes.etat, recap.volume.net_sur_periode) = etat
 
     return envois, nettoyer
 
@@ -693,6 +711,9 @@ def test_coupure_de_plusieurs_jours() -> None:
                  "celui du 11 aussi")
         verifier([c for c in envoyes if not c.endswith(" 0")] == ["2026-09-12 20"],
                  "mais un seul point du jour, le plus récent")
+        anciens = [t for t in envois if "Bilan du mercredi 9" in t or "Bilan du jeudi 10" in t]
+        verifier(anciens and all("MRR" not in t for t in anciens),
+                 "les bilans rattrapés des jours passés ne portent pas le MRR d'aujourd'hui")
     finally:
         nettoyer()
 
@@ -731,11 +752,11 @@ def test_mode_test_non_compte() -> None:
         jour = datetime.now(alertes.FUSEAU).date().isoformat()
         t = journal.totaux(db, jour, jour)
         verifier(t["nombre"] == 1, "seul l'abonnement réel est compté")
-        verifier("Journée en cours" in envois[0],
-                 "l'alerte de test porte quand même l'état de la journée")
-        verifier("souscription aujourd'hui" not in envois[0],
-                 "mais sans s'y compter : elle ne dit pas '1re souscription aujourd'hui'")
-        verifier("1re souscription aujourd'hui" in envois[1],
+        verifier("journée en cours" in envois[0] or "aucune souscription réelle" in envois[0],
+                 "l'alerte de test porte quand même l'état réel de la journée")
+        verifier("1re souscription" not in envois[0],
+                 "mais sans s'y compter")
+        verifier("1re souscription" in envois[1].split("\n")[0],
                  "l'alerte réelle, elle, s'inclut dans le compte du jour")
     finally:
         serveur_module.telegram.envoyer, config.DB_PATH = vrai_envoyer, vrai_db
@@ -756,33 +777,28 @@ def test_cumul_sur_deux_souscriptions() -> None:
                                               event_id=f"evt_cumul{n}")).encode()
                 client.post("/webhook/stripe", content=corps,
                             headers={"stripe-signature": _signer(corps, SECRET_TEST)})
-        verifier("1re souscription aujourd'hui" in envois[0], "la première annonce '1re'")
-        verifier("2e souscription aujourd'hui" in envois[1], "la seconde annonce '2e'")
-        verifier("58,00 € / mois au total" in envois[1], "2 × 29,00 € = 58,00 € cumulés")
+        verifier(envois[0].split("\n")[0].startswith("<b>🎉 1re souscription"),
+                 "la première annonce '1re' dès le titre")
+        verifier("2e souscription" in envois[1].split("\n")[0], "la seconde annonce '2e'")
+        verifier("58,00 €" in envois[1].split("\n")[0], "2 × 29,00 € = 58,00 € de volume")
     finally:
         serveur_module.telegram.envoyer, config.DB_PATH = vrai_envoyer, vrai_db
 
 
 
-def test_plusieurs_devises_aerees() -> None:
-    """ID by Rivoli facture en euros et en dollars, à la période et au mois : mises
-    bout à bout, cinq natures de revenu donnent une ligne illisible."""
-    print("\nPlusieurs natures de revenu")
+def test_volume_lisible_en_une_ligne() -> None:
+    """Regrouper par devise plutôt que par périodicité ramène cinq lignes illisibles
+    à deux montants, qui tiennent dans le titre de la notification."""
+    print("\nVolume tenant sur une ligne")
     db = _base_neuve()
     for i, (m, per, dev) in enumerate([(1900, "/ mois", "eur"), (2900, "/ 28 jours", "eur"),
                                        (3900, "/ mois", "usd"), (4900, "/ an", "usd"),
                                        (5900, "/ 28 jours", "usd")]):
         _souscrire(db, f"d{i}", m, per, devise=dev)
     t = journal.totaux(db, "2026-09-11", "2026-09-11")
-    texte = alertes.message_point_du_jour(20, t)
-    verifier(texte.count("    • ") == 5, "les cinq montants sont sur des lignes séparées")
-    verifier("€" in texte and "$" in texte, "les deux devises sont présentes")
-
-    db2 = _base_neuve()
-    _souscrire(db2, "u1", 1900, "/ mois")
-    _souscrire(db2, "u2", 19000, "/ an")
-    texte = alertes.message_point_du_jour(20, journal.totaux(db2, "2026-09-11", "2026-09-11"))
-    verifier("    • " not in texte, "deux montants restent sur la même ligne")
+    verifier(len(t["groupes"]) == 2, "cinq périodicités, mais deux devises : deux montants")
+    verifier(alertes._formuler_groupes(t["groupes"]) == ["48,00 €", "147,00 $"],
+             "un montant par devise")
 
 
 class _FauxEvenement:
@@ -794,18 +810,14 @@ class _FauxEvenement:
 
 
 class _FauxEvenements:
-    """Remplace stripe.Event pour ne jamais toucher le réseau dans les tests."""
+    """Remplace l'accès Stripe du rattrapage pour ne jamais toucher le réseau."""
     appels: list = []
     contenu: list = []
 
     @classmethod
-    def list(cls, **kwargs):
-        cls.appels.append(kwargs)
-        class R:
-            @staticmethod
-            def auto_paging_iter():
-                return iter([_FauxEvenement(e) for e in cls.contenu])
-        return R
+    def lister(cls, depuis):
+        cls.appels.append(depuis)
+        return iter([_FauxEvenement(e) for e in cls.contenu])
 
 
 def test_rattrapage() -> None:
@@ -832,10 +844,10 @@ def test_rattrapage() -> None:
     _FauxEvenements.appels = []
 
     envois: list = []
-    vrai_event, vrai_db = rattrapage.stripe.Event, config.DB_PATH
-    vrai_envoyer, vraie_cle = telegram.envoyer, rattrapage.stripe.api_key
-    rattrapage.stripe.Event = _FauxEvenements
-    rattrapage.stripe.api_key = "rk_factice"
+    vrai_lister, vrai_db = rattrapage._lister_evenements, config.DB_PATH
+    vrai_envoyer, vraie_cle = telegram.envoyer, config.STRIPE_API_KEY
+    rattrapage._lister_evenements = _FauxEvenements.lister
+    config.STRIPE_API_KEY = "rk_factice"
     config.DB_PATH = db
     telegram.envoyer = lambda *a: envois.append(a)
     try:
@@ -845,9 +857,9 @@ def test_rattrapage() -> None:
 
         t = journal.totaux(db, jour, jour)
         verifier(t["nombre"] == 2, "elles sont comptées dans la journée")
-        verifier(t["groupes"][("eur", "/ mois")] == 4800, "avec leurs montants (19 + 29 €)")
+        verifier(t["groupes"]["eur"] == 4800, "avec leurs montants (19 + 29 €)")
 
-        verifier(alertes.phrase_cumul({**t, "nombre": t["nombre"] + 1}).startswith("<i>3e"),
+        verifier(alertes.phrase_cumul({**t, "nombre": t["nombre"] + 1}).startswith("3e"),
                  "la prochaine alerte annoncera donc '3e souscription', pas '1re'")
 
         ajoutes = rattrapage.executer()
@@ -860,12 +872,11 @@ def test_rattrapage() -> None:
         verifier(rattrapage.ETAT["execute"] and rattrapage.ETAT["probleme"] is None,
                  "l'état du rattrapage est exposé, pour que /health puisse le dire")
 
-        types_demandes = _FauxEvenements.appels[0].get("types")
-        verifier(types_demandes == config.EVENEMENTS,
-                 "on ne demande à Stripe que les évènements qui nous intéressent")
+        verifier(_FauxEvenements.appels[0].hour == 0 and _FauxEvenements.appels[0].minute == 0,
+                 "la fenêtre relue commence à minuit, pas à l'heure courante")
     finally:
-        rattrapage.stripe.Event, config.DB_PATH = vrai_event, vrai_db
-        telegram.envoyer, rattrapage.stripe.api_key = vrai_envoyer, vraie_cle
+        rattrapage._lister_evenements, config.DB_PATH = vrai_lister, vrai_db
+        telegram.envoyer, config.STRIPE_API_KEY = vrai_envoyer, vraie_cle
 
 
 def test_rattrapage_sans_appels_de_libelles() -> None:
@@ -897,13 +908,13 @@ def test_rattrapage_sans_appels_de_libelles() -> None:
 
 def test_rattrapage_sans_cle() -> None:
     print("\nRattrapage sans clé Stripe")
-    vraie_cle = rattrapage.stripe.api_key
-    rattrapage.stripe.api_key = ""
+    vraie_cle = config.STRIPE_API_KEY
+    config.STRIPE_API_KEY = ""
     try:
         verifier(rattrapage.executer() == 0,
                  "sans clé, le rattrapage s'abstient au lieu d'échouer")
     finally:
-        rattrapage.stripe.api_key = vraie_cle
+        config.STRIPE_API_KEY = vraie_cle
 
 
 def test_rattrapage_jamais_bloquant() -> None:
@@ -911,24 +922,220 @@ def test_rattrapage_jamais_bloquant() -> None:
     pipeline qui refuse de démarrer."""
     print("\nRattrapage en panne")
     db = _base_neuve()
-    vrai_event, vrai_db = rattrapage.stripe.Event, config.DB_PATH
-    vraie_cle = rattrapage.stripe.api_key
-    rattrapage.stripe.api_key = "rk_factice"
+    vrai_lister, vrai_db = rattrapage._lister_evenements, config.DB_PATH
+    vraie_cle = config.STRIPE_API_KEY
+    config.STRIPE_API_KEY = "rk_factice"
     config.DB_PATH = db
 
-    class EventQuiEchoue:
-        @staticmethod
-        def list(**kwargs):
-            raise RuntimeError("API Stripe indisponible")
+    def lister_qui_echoue(depuis):
+        raise RuntimeError("API Stripe indisponible")
 
-    rattrapage.stripe.Event = EventQuiEchoue
+    rattrapage._lister_evenements = lister_qui_echoue
     try:
         verifier(rattrapage.executer() == 0, "l'échec est absorbé, sans exception")
         verifier(rattrapage.ETAT["probleme"] is not None,
                  "mais le problème est signalé, pas passé sous silence")
     finally:
-        rattrapage.stripe.Event, config.DB_PATH = vrai_event, vrai_db
-        rattrapage.stripe.api_key = vraie_cle
+        rattrapage._lister_evenements, config.DB_PATH = vrai_lister, vrai_db
+        config.STRIPE_API_KEY = vraie_cle
+
+
+
+class _FauxMouvements:
+    """Remplace l'accès aux mouvements du solde pour ne jamais toucher le réseau."""
+    contenu: list = []
+    erreur = None
+    appels = 0
+
+    @classmethod
+    def lister(cls, debut, fin):
+        cls.appels += 1
+        if cls.erreur:
+            raise cls.erreur
+        return iter([_FauxEvenement(m) for m in cls.contenu])
+
+
+def test_volume_net() -> None:
+    """Le volume net ne compte que les ventes et les remboursements. Un virement
+    vers la banque (payout) n'est PAS une perte : compté comme tel, il transformait
+    3 325 € encaissés en 487 € — un chiffre faux de 85 %."""
+    print("\nVolume net encaissé")
+    _FauxMouvements.contenu = [
+        {"type": "charge", "currency": "eur", "amount": 250000},
+        {"type": "payment", "currency": "eur", "amount": 82513},
+        {"type": "refund", "currency": "eur", "amount": -1900},
+        {"type": "refund_failure", "currency": "eur", "amount": 500},  # remboursement raté : l'argent revient
+        {"type": "payout", "currency": "eur", "amount": -279243},   # virement bancaire
+        {"type": "stripe_fee", "currency": "eur", "amount": -4507}, # frais Stripe
+    ]
+    _FauxMouvements.erreur = None
+    _FauxMouvements.appels = 0
+    volume._cache.clear()
+    vrai, vraie_cle = volume._lister_mouvements, config.STRIPE_API_KEY
+    volume._lister_mouvements, config.STRIPE_API_KEY = _FauxMouvements.lister, "rk_factice"
+    try:
+        net = volume.net_de_la_journee(datetime.now(alertes.FUSEAU))
+        verifier(net == {"eur": 331113},
+                 "2 500 + 825,13 - 19 + 5 = 3 311,13 € : ni le virement ni les frais n'entrent, "
+                 "et un remboursement raté revient dans le volume")
+        volume.net_de_la_journee(datetime.now(alertes.FUSEAU))
+        verifier(_FauxMouvements.appels == 1,
+                 "la même période n'est pas relue dans les 5 minutes (panne Telegram)")
+
+        verifier(alertes._volume_lisible(net) == "3 311,13 €", "le montant s'affiche bien")
+
+        _FauxMouvements.contenu = []
+        volume._cache.clear()
+        vide = volume.net_de_la_journee(datetime.now(alertes.FUSEAU))
+        verifier(alertes._volume_lisible(vide) == "0,00 €",
+                 "une journée sans vente affiche 0,00 € — et non rien, qui voudrait "
+                 "dire « on ne sait pas »")
+    finally:
+        volume._lister_mouvements, config.STRIPE_API_KEY = vrai, vraie_cle
+        volume._cache.clear()
+
+
+def test_volume_net_indisponible() -> None:
+    """Sans la permission Stripe, le récapitulatif doit partir quand même — sans la
+    ligne, plutôt qu'en annonçant zéro alors qu'on ne sait pas."""
+    print("\nVolume net inaccessible")
+    import stripe as _stripe
+    vrai, vraie_cle = volume._lister_mouvements, config.STRIPE_API_KEY
+    _FauxMouvements.erreur = _stripe.PermissionError("permission manquante")
+    volume._lister_mouvements, config.STRIPE_API_KEY = _FauxMouvements.lister, "rk_factice"
+    volume._cache.clear()
+    try:
+        verifier(volume.net_de_la_journee(datetime.now(alertes.FUSEAU)) is None,
+                 "l'absence de permission renvoie None, sans exception")
+        verifier("Balance transactions" in (volume.ETAT["probleme"] or ""),
+                 "et /health saura dire quelle permission manque")
+        verifier(alertes._volume_lisible(None) is None,
+                 "et le volume disparaît du titre, sans annoncer zéro")
+        t = {"nombre": 2, "groupes": {"eur": 4800}, "non_chiffrables": 0, "partiels": 0}
+        verifier("2 nouvelles souscriptions" in alertes.message_point_du_jour(20, t, None),
+                 "le récapitulatif part quand même, avec les souscriptions")
+    finally:
+        volume._lister_mouvements, config.STRIPE_API_KEY = vrai, vraie_cle
+        _FauxMouvements.erreur = None
+
+
+
+def test_deuxieme_ligne_mrr() -> None:
+    print("\nDeuxième ligne : MRR et abonnés")
+    t = {"nombre": 37, "groupes": {"eur": 92976}, "non_chiffrables": 0, "partiels": 0}
+    etat = {"mrr": {"eur": 6636882, "usd": 7897713}, "mrr_eur": 12870692, "abonnes": 3738}
+    texte = alertes.message_point_du_jour(20, t, {"eur": 332513}, etat)
+    lignes = texte.split("\n")
+    verifier("37 nouvelles souscriptions" in lignes[0] and "3 325,13 € net" in lignes[0],
+             "1re ligne : souscriptions du jour et volume net")
+    verifier("MRR ≈" in lignes[1] and "128 706,92 €" in lignes[1],
+             "2e ligne : le MRR, marqué ≈ car recalculé")
+    verifier("3738" in lignes[1] and "abonnés actifs" in lignes[1],
+             "2e ligne : les abonnés actifs")
+    verifier(alertes.ligne_indicateurs(None) == [],
+             "sans accès aux abonnements, la 2e ligne disparaît simplement")
+
+    sans_conversion = {"mrr": {"eur": 100, "gbp": 100}, "mrr_eur": None, "abonnes": 2}
+    ligne = alertes.ligne_indicateurs(sans_conversion)[0]
+    verifier("£" in ligne and "€" in ligne,
+             "une devise non convertible : le détail par devise plutôt que rien")
+
+
+def test_mensualisation() -> None:
+    """Les conventions de Stripe, vérifiées sur le vrai compte le 11/09/2026 : un
+    abonnement de 28 jours compte pour un mois plein, sans prorata."""
+    print("\nMensualisation")
+    m = abonnes._mensualiser
+    verifier(m(1900, "month", 1) == 1900, "mensuel : inchangé")
+    verifier(m(19000, "year", 1) == 19000 / 12, "annuel : divisé par 12")
+    verifier(m(5700, "month", 3) == 1900, "trimestriel : divisé par 3")
+    verifier(m(1900, "day", 28) == 1900, "28 jours = un mois, comme Stripe")
+    verifier(m(1900, "day", 30) == 1900, "30 jours aussi")
+    verifier(abs(m(700, "day", 7) - 700 * 365 / 12 / 7) < 0.01, "7 jours : au prorata")
+    verifier(abs(m(700, "week", 1) - 700 * 365 / 12 / 7) < 0.01, "hebdomadaire : idem")
+
+
+def test_mrr_abonnement() -> None:
+    print("\nMRR d'un abonnement")
+    def abo(**extra):
+        base = {"customer": "cus_1", "status": "active", "items": {"data": [{
+            "quantity": 1, "price": {"unit_amount": 1900, "currency": "eur",
+                                     "recurring": {"interval": "month", "interval_count": 1}}}]}}
+        base.update(extra); return base
+
+    verifier(abonnes._mrr_abonnement(abo())[:2] == ("eur", 1900.0), "cas simple")
+    remise = abo(discounts=[{"coupon": {"percent_off": 50}}])
+    verifier(abonnes._mrr_abonnement(remise)[1] == 950.0, "remise de 50 % (ancien format)")
+    remise2 = abo(discounts=[{"source": {"type": "coupon", "coupon": {"percent_off": 50}}}])
+    verifier(abonnes._mrr_abonnement(remise2)[1] == 950.0,
+             "remise de 50 % au format 2026 (source.coupon) — celui du vrai compte")
+    identifiants = abo(discounts=["di_123"])   # non développée : identifiant brut
+    verifier(abonnes._mrr_abonnement(identifiants)[1] == 1900.0,
+             "une remise non développée est ignorée au lieu de faire planter le calcul")
+    expiree = abo(discounts=[{"end": 1, "source": {"coupon": {"percent_off": 50}}}])
+    verifier(abonnes._mrr_abonnement(expiree)[1] == 1900.0, "une remise terminée ne compte plus")
+
+    annuel = abo(discounts=[{"source": {"coupon": {"amount_off": 2000}}}])
+    annuel["items"]["data"][0]["price"] = {"unit_amount": 19000, "currency": "eur",
+                                           "recurring": {"interval": "year", "interval_count": 1}}
+    verifier(abs(abonnes._mrr_abonnement(annuel)[1] - (19000 - 2000) / 12) < 0.01,
+             "20 € de remise sur un annuel : 1,67 €/mois en moins, pas 20 €/mois")
+
+    usage = abo(); usage["items"]["data"][0]["price"]["recurring"]["usage_type"] = "metered"
+    verifier(abonnes._mrr_abonnement(usage)[1] == 0, "le facturé à l'usage n'a pas de MRR")
+    paliers = abo(); paliers["items"]["data"][0]["price"]["unit_amount"] = None
+    devise, mensuel, non_chiffre = abonnes._mrr_abonnement(paliers)
+    verifier(mensuel == 0 and non_chiffre, "un prix à paliers est signalé comme non chiffré")
+
+
+def test_mrr_en_euros() -> None:
+    print("\nConversion du MRR en euros")
+    vrai = config.TAUX_EUR_USD
+    config.TAUX_EUR_USD = 1.16
+    try:
+        verifier(abonnes._en_euros({"eur": 11600, "usd": 11600}) == 21600,
+                 "116 € + 116 $ = 116 + 100 = 216 € au taux 1,16")
+        verifier(abonnes._en_euros({"eur": 100, "gbp": 100}) is None,
+                 "une devise inconnue : pas de total plutôt qu'un total amputé")
+    finally:
+        config.TAUX_EUR_USD = vrai
+
+
+def test_abonnes_actifs_sans_impayes() -> None:
+    """Le tableau de bord Stripe ne compte pas les impayés parmi les abonnés
+    actifs (3 701 contre 4 061 en les incluant, vérifié le 11/09/2026) — mais
+    leur MRR, lui, est bien compté, conformément à la définition de Stripe."""
+    print("\nAbonnés actifs et impayés")
+    def prix(montant): return {"unit_amount": montant, "currency": "eur",
+                               "recurring": {"interval": "month", "interval_count": 1}}
+    contenu = {
+        "active": [
+            {"customer": "cus_a", "status": "active",
+             "items": {"data": [{"quantity": 1, "price": prix(1000)}]}},
+            {"customer": "cus_paliers", "status": "active",          # prix à paliers
+             "items": {"data": [{"quantity": 1, "price": prix(None)}]}},
+        ],
+        "past_due": [
+            {"customer": "cus_b", "status": "past_due",
+             "items": {"data": [{"quantity": 1, "price": prix(1000)}]}},
+        ],
+    }
+    def lister(statut):
+        return iter([_FauxEvenement(c) for c in contenu[statut]])
+
+    vrai, vraie_cle = abonnes._lister_abonnements, config.STRIPE_API_KEY
+    abonnes._lister_abonnements, config.STRIPE_API_KEY = lister, "rk_factice"
+    abonnes._cache.update(instant=0.0, valeur=None)
+    try:
+        e = abonnes.etat()
+        verifier(e["mrr"]["eur"] == 2000, "le MRR compte l'actif ET l'impayé")
+        verifier(e["abonnes"] == 2,
+                 "les abonnés actifs : l'actif et celui à paliers (il paie), pas l'impayé")
+        verifier(abonnes.ETAT["paliers_non_chiffres"] == 1,
+                 "le prix à paliers non chiffré est signalé dans l'état")
+    finally:
+        abonnes._lister_abonnements, config.STRIPE_API_KEY = vrai, vraie_cle
+        abonnes._cache.update(instant=0.0, valeur=None)
 
 
 
@@ -943,12 +1150,15 @@ if __name__ == "__main__":
         test_cle_posee_par_le_module,
         test_evenement_non_gere, test_client_non_enrichi,
         test_journal, test_route_webhook, test_configuration_incomplete,
-        test_requetes_simultanees, test_totaux, test_mensuel_et_annuel_jamais_additionnes,
+        test_requetes_simultanees, test_totaux, test_devises_jamais_melangees,
         test_souscription_non_chiffrable, test_phrase_cumul, test_messages_recap,
         test_planification_recaps, test_bilan_minuit_toujours_envoye,
         test_coupure_de_plusieurs_jours,
         test_premier_demarrage_silencieux, test_mode_test_non_compte,
-        test_cumul_sur_deux_souscriptions, test_plusieurs_devises_aerees,
+        test_cumul_sur_deux_souscriptions, test_volume_lisible_en_une_ligne,
+        test_volume_net, test_volume_net_indisponible, test_deuxieme_ligne_mrr,
+        test_mensualisation, test_mrr_abonnement, test_mrr_en_euros,
+        test_abonnes_actifs_sans_impayes,
         test_rattrapage, test_rattrapage_sans_appels_de_libelles, test_rattrapage_sans_cle, test_rattrapage_jamais_bloquant,
     ]:
         test()
