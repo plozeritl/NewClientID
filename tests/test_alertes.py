@@ -585,13 +585,14 @@ def test_phrase_cumul() -> None:
     print("\nCumul affiché dans l'alerte")
     db = _base_neuve()
     _souscrire(db, "p1", 1900)
-    phrase = alertes.phrase_cumul(journal.totaux(db, "2026-09-11", "2026-09-11"))
+    phrase = alertes.phrase_cumul(journal.totaux(db, "2026-09-11", "2026-09-11"), {"eur": 344254})
     verifier("1re souscription" in phrase, "la première dit '1re'")
-    verifier("19,00 €" in phrase, "avec le volume du jour")
+    verifier("3 442,54 € net" in phrase, "avec le volume net du jour, comme les récapitulatifs")
+    verifier("19,00" not in phrase, "et plus le montant catalogue")
     _souscrire(db, "p2", 2900)
-    phrase = alertes.phrase_cumul(journal.totaux(db, "2026-09-11", "2026-09-11"))
-    verifier("2e souscription" in phrase, "la deuxième dit '2e'")
-    verifier("48,00 €" in phrase, "et le volume cumulé de la journée")
+    phrase = alertes.phrase_cumul(journal.totaux(db, "2026-09-11", "2026-09-11"), None)
+    verifier(phrase == "2e souscription du jour",
+             "volume inconnu : le titre ne dit que le compte, sans annoncer zéro")
     verifier("<" not in phrase,
              "le cumul est un titre, pas du HTML : il sera mis en gras par _bloc")
 
@@ -780,7 +781,6 @@ def test_cumul_sur_deux_souscriptions() -> None:
         verifier(envois[0].split("\n")[0].startswith("<b>🎉 1re souscription"),
                  "la première annonce '1re' dès le titre")
         verifier("2e souscription" in envois[1].split("\n")[0], "la seconde annonce '2e'")
-        verifier("58,00 €" in envois[1].split("\n")[0], "2 × 29,00 € = 58,00 € de volume")
     finally:
         serveur_module.telegram.envoyer, config.DB_PATH = vrai_envoyer, vrai_db
 
@@ -859,7 +859,7 @@ def test_rattrapage() -> None:
         verifier(t["nombre"] == 2, "elles sont comptées dans la journée")
         verifier(t["groupes"]["eur"] == 4800, "avec leurs montants (19 + 29 €)")
 
-        verifier(alertes.phrase_cumul({**t, "nombre": t["nombre"] + 1}).startswith("3e"),
+        verifier(alertes.phrase_cumul({**t, "nombre": t["nombre"] + 1}, None).startswith("3e"),
                  "la prochaine alerte annoncera donc '3e souscription', pas '1re'")
 
         ajoutes = rattrapage.executer()

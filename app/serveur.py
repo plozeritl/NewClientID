@@ -220,11 +220,19 @@ def _traiter(corps: bytes, signature: str | None) -> Response:
             client.get("id") if isinstance(client, dict) else client,
             montant, devise, periodicite, jour, partiel,
         )
-        cumul = alertes.phrase_cumul(journal.totaux(config.DB_PATH, jour, jour))
+        # Le volume net du jour dans le titre, comme sur les récapitulatifs. C'est
+        # un appel Stripe sur le chemin du webhook, mais borné : le résultat est
+        # gardé 5 minutes, et une journée tient en une ou deux pages.
+        cumul = alertes.phrase_cumul(
+            journal.totaux(config.DB_PATH, jour, jour),
+            volume.net_de_la_journee(datetime.now(alertes.FUSEAU)),
+        )
     else:
-        aujourdhui = datetime.now(alertes.FUSEAU).date().isoformat()
+        maintenant = datetime.now(alertes.FUSEAU)
+        aujourdhui = maintenant.date().isoformat()
         etat = alertes.phrase_etat_journee(
-            journal.totaux(config.DB_PATH, aujourdhui, aujourdhui)
+            journal.totaux(config.DB_PATH, aujourdhui, aujourdhui),
+            volume.net_de_la_journee(maintenant),
         )
 
     texte = alertes.rendre(contexte, cumul, etat)

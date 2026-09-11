@@ -428,29 +428,31 @@ def _souscriptions_au_pluriel(nombre: int) -> str:
     return "1 nouvelle souscription" if nombre == 1 else f"{nombre} nouvelles souscriptions"
 
 
-def phrase_cumul(totaux_jour: dict) -> str:
-    """Le TITRE d'une alerte réelle : « 12e souscription · 929,76 € + 559,87 $ ».
+def phrase_cumul(totaux_jour: dict, volume: dict | None = None) -> str:
+    """Le TITRE d'une alerte réelle : « 12e souscription du jour · 3 442,54 € net ».
 
     Placé en première ligne, et pas en bas : Telegram n'affiche que le début du
     message dans sa notification. L'essentiel — combien aujourd'hui, pour quel
-    volume — doit donc tenir là, sans avoir à ouvrir la conversation.
+    volume net — doit donc tenir là, sans avoir à ouvrir la conversation. Même
+    contenu que la première ligne des récapitulatifs, pour qu'un coup d'œil suffise
+    quel que soit le message.
     """
     nombre = totaux_jour.get("nombre") or 0
     ordinal = "1re" if nombre <= 1 else f"{nombre}e"
-    montants = _formuler_groupes(totaux_jour.get("groupes") or {})
-    if montants:
-        return f"{ordinal} souscription du jour · {' + '.join(montants)} souscrits"
+    encaisse = _volume_lisible(volume)
+    if encaisse:
+        return f"{ordinal} souscription du jour · {encaisse} net"
     return f"{ordinal} souscription du jour"
 
 
-def phrase_etat_journee(totaux_jour: dict) -> str:
+def phrase_etat_journee(totaux_jour: dict, volume: dict | None = None) -> str:
     """Le même titre pour une alerte du mode test, qui n'est jamais comptée : il
     annonce l'état réel de la journée sans s'y inclure."""
     nombre = totaux_jour.get("nombre") or 0
-    montants = _formuler_groupes(totaux_jour.get("groupes") or {})
-    if nombre == 0:
+    encaisse = _volume_lisible(volume)
+    if nombre == 0 and not encaisse:
         return "aucune souscription réelle aujourd'hui"
-    detail = f" · {' + '.join(montants)} souscrits" if montants else ""
+    detail = f" · {encaisse} net" if encaisse else ""
     return f"journée en cours : {_souscriptions_au_pluriel(nombre)}{detail}"
 
 
