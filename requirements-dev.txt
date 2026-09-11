@@ -1,0 +1,3 @@
+# Uniquement pour lancer tests/test_alertes.py. Pas nécessaire en production.
+-r requirements.txt
+httpx

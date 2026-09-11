@@ -1,0 +1,16 @@
+# Ne JAMAIS embarquer de secrets dans une image : une image se partage, se pousse
+# sur un registre, et ses couches se ré-extraient. Les variables de production sont
+# fournies par Railway, jamais copiées dans l'image.
+.env
+.env.*
+!.env.example
+
+# Inutile dans l'image, et source d'incohérences (le venv est celui du Mac).
+.venv/
+__pycache__/
+*.pyc
+data/
+.git/
+.gitignore
+tests/
+README.md

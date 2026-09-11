@@ -1,0 +1,13 @@
+# Versions épinglées : sans ça, un redéploiement dans six mois récupère
+# silencieusement de nouvelles versions majeures et peut casser la pipeline
+# sans que rien ne le signale.
+
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+stripe==15.6.1
+requests==2.34.2
+python-dotenv==1.2.3
+
+# Base de fuseaux horaires : l'image Docker slim ne la fournit pas toujours,
+# et les dates des alertes sont affichées en heure de Paris.
+tzdata
