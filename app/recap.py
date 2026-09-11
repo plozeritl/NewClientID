@@ -24,10 +24,12 @@ logger = logging.getLogger("alertes.recap")
 
 INTERVALLE_VERIFICATION = 60      # secondes entre deux vérifications
 
-# Nombre de journées passées dont on rattrape encore le bilan de minuit. Sans ça,
+# Nombre de journées passées dont on rattrape encore le bilan de minuit. À ne pas
+# confondre avec config.RATTRAPAGE_JOURS, qui dit sur combien de jours l'historique
+# Stripe est relu au démarrage — les deux se répondent (voir app/rattrapage.py). Sans ça,
 # une coupure de plus de 24 h perdait définitivement le bilan des jours traversés :
 # seuls les créneaux de la date du jour étaient examinés.
-RATTRAPAGE_JOURS = 3
+RATTRAPAGE_BILANS_JOURS = 3
 
 
 def _maintenant() -> datetime:
@@ -47,7 +49,7 @@ def _creneaux_a_considerer(maintenant: datetime) -> list[datetime]:
     """
     creneaux = []
     if 0 in config.RECAP_HEURES:
-        for recul in range(RATTRAPAGE_JOURS, 0, -1):
+        for recul in range(RATTRAPAGE_BILANS_JOURS, 0, -1):
             veille = maintenant - timedelta(days=recul)
             creneaux.append(veille.replace(hour=0, minute=0, second=0, microsecond=0))
     for heure in config.RECAP_HEURES:

@@ -162,7 +162,7 @@ def _nom_formule(price: dict) -> str:
     return _echapper(price.get("id") or "formule inconnue")
 
 
-def _analyser_abonnement(subscription: dict) -> dict:
+def _analyser_abonnement(subscription: dict, libelles: bool = True) -> dict:
     """Décrit l'abonnement : une ligne par formule, et son montant périodique chiffré.
 
     `total_centimes` porte la part FIXE, celle qui est connue d'avance. `partiel`
@@ -172,6 +172,11 @@ def _analyser_abonnement(subscription: dict) -> dict:
     alors qu'afficher « Total : 29 € » sur l'alerte elle-même serait mensonger.
     D'où : le montant compte dans les cumuls, mais aucun total n'est affiché sur
     l'alerte tant qu'une ligne manque.
+
+    `libelles=False` saute la résolution des noms de formules, qui est la seule
+    partie à interroger Stripe. Le rattrapage n'affiche aucun nom : sans ce
+    raccourci, relire une semaine d'historique déclenchait un appel réseau par
+    ligne d'abonnement — des centaines d'allers-retours en série au démarrage.
 
     Une ligne échappe au calcul dans trois cas :
       - tarification à paliers : unit_amount vaut None ;
@@ -210,7 +215,7 @@ def _analyser_abonnement(subscription: dict) -> dict:
             lignes_chiffrees += 1
             montant = _montant(unitaire * quantite, price.get("currency")) or "montant inconnu"
 
-        libelle = _nom_formule(price)
+        libelle = _nom_formule(price) if libelles else ""
         if quantite is not None and quantite != 1:
             libelle = f"{libelle} ×{quantite}"
         suffixe = f" {_periodicite(price)}" if _periodicite(price) else ""
@@ -244,11 +249,22 @@ def analyser(contexte: dict) -> dict:
     return contexte["analyse"]
 
 
+def _chiffres(analyse: dict) -> tuple[int | None, str | None, str | None, bool]:
+    return (analyse["total_centimes"], analyse["devise"], analyse["periodicite"],
+            bool(analyse["partiel"]))
+
+
 def resume_chiffre(contexte: dict) -> tuple[int | None, str | None, str | None, bool]:
     """(montant fixe en centimes, devise, périodicité, part à l'usage) — ce que le
-    journal enregistre pour totaliser la journée."""
-    a = analyser(contexte)
-    return a["total_centimes"], a["devise"], a["periodicite"], bool(a["partiel"])
+    journal enregistre pour totaliser la journée. Réutilise l'analyse mise en cache,
+    qui servira aussi à composer le message : un seul aller-retour Stripe."""
+    return _chiffres(analyser(contexte))
+
+
+def resume_chiffre_sans_reseau(subscription: dict) -> tuple[int | None, str | None, str | None, bool]:
+    """La même chose, sans interroger Stripe. Pour le rattrapage, qui compte des
+    souscriptions sans jamais afficher leur libellé."""
+    return _chiffres(_analyser_abonnement(subscription, libelles=False))
 
 
 def _echapper(texte: str) -> str:
@@ -424,8 +440,13 @@ def phrase_cumul(totaux_jour: dict) -> str:
     base = f"<i>{ordinal} souscription aujourd'hui</i>"
     montants = _formuler_groupes(totaux_jour.get("groupes") or {})
     if nombre > 1 and montants:
-        return (f"<i>{ordinal} souscription aujourd'hui · "
-                f"{' + '.join(montants)} au total</i>")
+        if len(montants) <= 2:
+            return (f"<i>{ordinal} souscription aujourd'hui · "
+                    f"{' + '.join(montants)} au total</i>")
+        # Même règle que les récapitulatifs : au-delà de deux natures de revenu,
+        # une par ligne. ID by Rivoli en cumule jusqu'à cinq.
+        détail = "\n".join(f"    • {m}" for m in montants)
+        return f"<i>{ordinal} souscription aujourd'hui, au total :</i>\n{détail}"
     return base
 
 
@@ -437,6 +458,9 @@ def phrase_etat_journee(totaux_jour: dict) -> str:
     if nombre == 0:
         return "<i>Journée en cours : aucune souscription réelle</i>"
     montants = _formuler_groupes(totaux_jour.get("groupes") or {})
+    if len(montants) > 2:
+        détail = "\n".join(f"    • {m}" for m in montants)
+        return f"<i>Journée en cours : {_souscriptions_au_pluriel(nombre)}</i>\n{détail}"
     detail = f" · {' + '.join(montants)}" if montants else ""
     return f"<i>Journée en cours : {_souscriptions_au_pluriel(nombre)}{detail}</i>"
 
@@ -448,9 +472,15 @@ def _lignes_totaux(totaux: dict, intitule: str) -> list[str]:
 
     montants = _formuler_groupes(totaux.get("groupes") or {})
     ligne = f"{intitule} : <b>{_souscriptions_au_pluriel(nombre)}</b>"
-    if montants:
-        ligne += f" · {' + '.join(montants)}"
-    lignes = [ligne]
+    if len(montants) <= 2:
+        # Une ou deux natures de revenu tiennent sur la même ligne.
+        if montants:
+            ligne += f" · {' + '.join(montants)}"
+        lignes = [ligne]
+    else:
+        # Au-delà, les mettre bout à bout donne une ligne illisible : ID by Rivoli
+        # facture en euros et en dollars, à la période et au mois. Une par ligne.
+        lignes = [ligne] + [f"    • {m}" for m in montants]
 
     # Ne jamais laisser croire qu'un total est complet quand il ne l'est pas.
     non_chiffrables = totaux.get("non_chiffrables") or 0

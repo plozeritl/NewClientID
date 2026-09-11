@@ -26,7 +26,7 @@ os.environ["TELEGRAM_CHAT_ID"] = "-1001234567890"
 os.environ["STRIPE_API_KEY"] = ""          # pas d'enrichissement : aucun appel réseau
 os.environ["DB_PATH"] = str(Path(tempfile.mkdtemp()) / "test.db")
 
-from app import alertes, config, journal, recap, telegram  # noqa: E402
+from app import alertes, config, journal, rattrapage, recap, telegram  # noqa: E402
 from datetime import datetime  # noqa: E402
 from app.serveur import app  # noqa: E402
 
@@ -764,6 +764,174 @@ def test_cumul_sur_deux_souscriptions() -> None:
 
 
 
+def test_plusieurs_devises_aerees() -> None:
+    """ID by Rivoli facture en euros et en dollars, à la période et au mois : mises
+    bout à bout, cinq natures de revenu donnent une ligne illisible."""
+    print("\nPlusieurs natures de revenu")
+    db = _base_neuve()
+    for i, (m, per, dev) in enumerate([(1900, "/ mois", "eur"), (2900, "/ 28 jours", "eur"),
+                                       (3900, "/ mois", "usd"), (4900, "/ an", "usd"),
+                                       (5900, "/ 28 jours", "usd")]):
+        _souscrire(db, f"d{i}", m, per, devise=dev)
+    t = journal.totaux(db, "2026-09-11", "2026-09-11")
+    texte = alertes.message_point_du_jour(20, t)
+    verifier(texte.count("    • ") == 5, "les cinq montants sont sur des lignes séparées")
+    verifier("€" in texte and "$" in texte, "les deux devises sont présentes")
+
+    db2 = _base_neuve()
+    _souscrire(db2, "u1", 1900, "/ mois")
+    _souscrire(db2, "u2", 19000, "/ an")
+    texte = alertes.message_point_du_jour(20, journal.totaux(db2, "2026-09-11", "2026-09-11"))
+    verifier("    • " not in texte, "deux montants restent sur la même ligne")
+
+
+class _FauxEvenement:
+    def __init__(self, contenu):
+        self._contenu = contenu
+
+    def to_dict(self):
+        return self._contenu
+
+
+class _FauxEvenements:
+    """Remplace stripe.Event pour ne jamais toucher le réseau dans les tests."""
+    appels: list = []
+    contenu: list = []
+
+    @classmethod
+    def list(cls, **kwargs):
+        cls.appels.append(kwargs)
+        class R:
+            @staticmethod
+            def auto_paging_iter():
+                return iter([_FauxEvenement(e) for e in cls.contenu])
+        return R
+
+
+def test_rattrapage() -> None:
+    """Au démarrage, les compteurs doivent refléter ce qui s'est déjà passé : sinon
+    la première alerte annonce « 1re souscription aujourd'hui » sur une journée qui
+    en compte déjà trente."""
+    print("\nRattrapage de l'historique Stripe")
+    db = _base_neuve()
+    jour = datetime.now(alertes.FUSEAU).date().isoformat()
+    instant = int(datetime.now(alertes.FUSEAU).timestamp())
+
+    def evt(eid, statut="active", livemode=True, montant=1900):
+        abo = json.loads(json.dumps(ABONNEMENT))
+        abo["status"] = statut
+        abo["items"]["data"][0]["price"]["unit_amount"] = montant
+        return {"id": eid, "type": "customer.subscription.created", "livemode": livemode,
+                "created": instant, "data": {"object": abo}}
+
+    _FauxEvenements.contenu = [
+        evt("evt_r1"), evt("evt_r2", montant=2900),
+        evt("evt_r3", statut="incomplete"),      # carte refusée : ne compte pas
+        evt("evt_r4", livemode=False),           # mode test : ne compte pas
+    ]
+    _FauxEvenements.appels = []
+
+    envois: list = []
+    vrai_event, vrai_db = rattrapage.stripe.Event, config.DB_PATH
+    vrai_envoyer, vraie_cle = telegram.envoyer, rattrapage.stripe.api_key
+    rattrapage.stripe.Event = _FauxEvenements
+    rattrapage.stripe.api_key = "rk_factice"
+    config.DB_PATH = db
+    telegram.envoyer = lambda *a: envois.append(a)
+    try:
+        ajoutes = rattrapage.executer()
+        verifier(ajoutes == 2, "seules les deux souscriptions réelles et abouties sont reprises")
+        verifier(envois == [], "le rattrapage n'envoie AUCUNE alerte : c'est du passé")
+
+        t = journal.totaux(db, jour, jour)
+        verifier(t["nombre"] == 2, "elles sont comptées dans la journée")
+        verifier(t["groupes"][("eur", "/ mois")] == 4800, "avec leurs montants (19 + 29 €)")
+
+        verifier(alertes.phrase_cumul({**t, "nombre": t["nombre"] + 1}).startswith("<i>3e"),
+                 "la prochaine alerte annoncera donc '3e souscription', pas '1re'")
+
+        ajoutes = rattrapage.executer()
+        verifier(journal.totaux(db, jour, jour)["nombre"] == 2,
+                 "relancer le rattrapage ne compte jamais deux fois la même souscription")
+        verifier(ajoutes == 0,
+                 "et il annonce 0 ajout, pas 2 : le décompte porte sur les lignes "
+                 "réellement créées, pas sur les évènements examinés")
+
+        verifier(rattrapage.ETAT["execute"] and rattrapage.ETAT["probleme"] is None,
+                 "l'état du rattrapage est exposé, pour que /health puisse le dire")
+
+        types_demandes = _FauxEvenements.appels[0].get("types")
+        verifier(types_demandes == config.EVENEMENTS,
+                 "on ne demande à Stripe que les évènements qui nous intéressent")
+    finally:
+        rattrapage.stripe.Event, config.DB_PATH = vrai_event, vrai_db
+        telegram.envoyer, rattrapage.stripe.api_key = vrai_envoyer, vraie_cle
+
+
+def test_rattrapage_sans_appels_de_libelles() -> None:
+    """Relire une semaine d'historique ne doit pas déclencher un appel réseau par
+    ligne d'abonnement : le rattrapage n'affiche jamais les noms de formules."""
+    print("\nRattrapage sans résolution des noms")
+    appels: list = []
+
+    class ProduitEspion:
+        @staticmethod
+        def retrieve(identifiant):
+            appels.append(identifiant)
+            raise AssertionError("le rattrapage ne doit pas interroger les produits")
+
+    abo = json.loads(json.dumps(ABONNEMENT))
+    abo["items"]["data"][0]["price"] = {"product": "rivoli_standard", "unit_amount": 1900,
+                                        "currency": "eur",
+                                        "recurring": {"interval": "month", "interval_count": 1}}
+    vrai_produit, vraie_cle = alertes.stripe.Product, alertes.stripe.api_key
+    alertes.stripe.Product, alertes.stripe.api_key = ProduitEspion, "rk_factice"
+    try:
+        montant, devise, periodicite, partiel = alertes.resume_chiffre_sans_reseau(abo)
+        verifier(appels == [], "aucun appel à Stripe pour résoudre le nom du produit")
+        verifier(montant == 1900 and devise == "eur" and periodicite == "/ mois",
+                 "les chiffres sont pourtant tous corrects")
+    finally:
+        alertes.stripe.Product, alertes.stripe.api_key = vrai_produit, vraie_cle
+
+
+def test_rattrapage_sans_cle() -> None:
+    print("\nRattrapage sans clé Stripe")
+    vraie_cle = rattrapage.stripe.api_key
+    rattrapage.stripe.api_key = ""
+    try:
+        verifier(rattrapage.executer() == 0,
+                 "sans clé, le rattrapage s'abstient au lieu d'échouer")
+    finally:
+        rattrapage.stripe.api_key = vraie_cle
+
+
+def test_rattrapage_jamais_bloquant() -> None:
+    """Une pipeline qui alerte avec des compteurs incomplets vaut mieux qu'une
+    pipeline qui refuse de démarrer."""
+    print("\nRattrapage en panne")
+    db = _base_neuve()
+    vrai_event, vrai_db = rattrapage.stripe.Event, config.DB_PATH
+    vraie_cle = rattrapage.stripe.api_key
+    rattrapage.stripe.api_key = "rk_factice"
+    config.DB_PATH = db
+
+    class EventQuiEchoue:
+        @staticmethod
+        def list(**kwargs):
+            raise RuntimeError("API Stripe indisponible")
+
+    rattrapage.stripe.Event = EventQuiEchoue
+    try:
+        verifier(rattrapage.executer() == 0, "l'échec est absorbé, sans exception")
+        verifier(rattrapage.ETAT["probleme"] is not None,
+                 "mais le problème est signalé, pas passé sous silence")
+    finally:
+        rattrapage.stripe.Event, config.DB_PATH = vrai_event, vrai_db
+        rattrapage.stripe.api_key = vraie_cle
+
+
+
 if __name__ == "__main__":
     for test in [
         test_montants, test_periodicite, test_abonnement_cree, test_mode_test_signale,
@@ -780,7 +948,8 @@ if __name__ == "__main__":
         test_planification_recaps, test_bilan_minuit_toujours_envoye,
         test_coupure_de_plusieurs_jours,
         test_premier_demarrage_silencieux, test_mode_test_non_compte,
-        test_cumul_sur_deux_souscriptions,
+        test_cumul_sur_deux_souscriptions, test_plusieurs_devises_aerees,
+        test_rattrapage, test_rattrapage_sans_appels_de_libelles, test_rattrapage_sans_cle, test_rattrapage_jamais_bloquant,
     ]:
         test()
     print(f"\n{reussis} vérifications passées.")

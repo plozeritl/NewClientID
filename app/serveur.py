@@ -24,13 +24,29 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
-from app import alertes, config, journal, recap, telegram
+from app import alertes, config, journal, rattrapage, recap, telegram
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 logger = logging.getLogger("alertes.serveur")
+
+
+async def _travail_de_fond() -> None:
+    """Rattrapage PUIS récapitulatifs, dans cet ordre, jamais en parallèle.
+
+    L'ordre compte : recap.boucle() vérifie ses créneaux dès sa première seconde.
+    Lancée en même temps que le rattrapage, elle pouvait poster le bilan de minuit
+    sur une base encore vide — puis marquer le créneau comme fait, définitivement.
+    Les bons chiffres n'auraient jamais été envoyés.
+
+    Le rattrapage ne lève jamais (il absorbe ses erreurs), donc rien ne peut
+    empêcher les récapitulatifs de démarrer ensuite.
+    """
+    await asyncio.to_thread(rattrapage.executer)
+    if config.RECAP_ACTIF:
+        await recap.boucle()
 
 
 @asynccontextmanager
@@ -53,9 +69,7 @@ async def lifespan(app: FastAPI):
         )
     logger.info("Évènements surveillés : %s", ", ".join(config.EVENEMENTS))
 
-    tache = None
     if config.RECAP_ACTIF:
-        tache = asyncio.create_task(recap.boucle())
         logger.info(
             "Récapitulatifs Telegram à %s (heure de Paris).",
             ", ".join(f"{h}h" for h in config.RECAP_HEURES),
@@ -63,10 +77,14 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("Récapitulatifs désactivés (RECAP_ACTIF=false).")
 
+    # Une seule tâche de fond, et la référence est gardée : asyncio ne retient
+    # qu'une référence faible sur les tâches, une variable perdue peut donc être
+    # ramassée par le garbage collector en plein travail, sans la moindre trace.
+    tache = asyncio.create_task(_travail_de_fond())
+
     yield
 
-    if tache:
-        tache.cancel()
+    tache.cancel()
 
 
 app = FastAPI(title="Alertes Stripe -> Telegram", version="1.0.0", lifespan=lifespan)
@@ -98,6 +116,7 @@ def health() -> JSONResponse:
             "recaps": (
                 [f"{h}h" for h in config.RECAP_HEURES] if config.RECAP_ACTIF else "désactivés"
             ),
+            "rattrapage": dict(rattrapage.ETAT),
         },
     )
 

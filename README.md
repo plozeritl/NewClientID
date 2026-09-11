@@ -65,12 +65,22 @@ Trois règles de comptage, pour que les chiffres veuillent dire quelque chose :
   font pas 209 € : ce sont deux natures de revenu différentes.
 - **Les abonnements du mode test de Stripe ne comptent pas.** Vos essais ne
   polluent jamais les chiffres réels.
+- **Chaque devise et chaque périodicité restent séparées.** ID by Rivoli facture en
+  euros et en dollars, à la période et au mois : au-delà de deux natures de revenu,
+  chacune va sur sa propre ligne plutôt que bout à bout.
 - **Un abonnement sans montant fixe** (tarification à paliers ou à l'usage) est
   compté mais pas chiffré — son montant n'existe qu'en fin de période. Le message le
   signale plutôt que de laisser croire à un total complet.
 
 Une souscription est datée du **jour de l'évènement Stripe**, pas du moment où elle
 est traitée : après une panne, les rattrapages retombent dans la bonne journée.
+
+**Au démarrage, les compteurs se remplissent tout seuls** en relisant les 7 derniers
+jours d'évènements Stripe (`app/rattrapage.py`). Sans ça, le premier jour de service
+annoncerait « 1re souscription aujourd'hui » sur une journée qui en compte déjà
+trente, et le bilan de minuit afficherait une semaine vide. Ce rattrapage n'envoie
+aucune alerte — ces souscriptions sont du passé — et ne compte jamais deux fois la
+même. Réglable via `RATTRAPAGE_JOURS` (0 pour le désactiver).
 
 Le service peut redémarrer sans rien perdre. S'il était arrêté à 16h, le
 récapitulatif manqué part au retour ; si plusieurs points du jour sont en retard, un
@@ -121,13 +131,16 @@ Le script liste les conversations connues du bot. Copier l'identifiant du groupe
 ### 4. Créer la clé Stripe (lecture seule) et vérifier
 
 Dans Stripe : **Développeurs → Clés API → Créer une clé restreinte**, en choisissant
-« Powering an integration you built ». Deux permissions, toutes les deux en **Read** :
+« Powering an integration you built ». Trois permissions, toutes en **Read** :
 
-- **Customers** → Read
-- **Products** → Read
+| Permission | À quoi elle sert |
+|---|---|
+| **Customers** → Read | écrire « Marie Dupont — marie@exemple.fr » plutôt que « cus_123 » |
+| **Products** → Read | écrire « ID by Rivoli — Standard » plutôt que « rivoli_standard » |
+| **Events** → Read | relire l'historique au démarrage, pour que les compteurs ne partent pas de zéro |
 
-Elles servent uniquement à écrire « Marie Dupont — marie@exemple.fr » dans l'alerte
-plutôt que « cus_123 ». Cette pipeline n'écrit jamais rien dans Stripe : lui donner
+Sans **Events**, la pipeline alerte normalement mais les totaux démarrent vides ;
+`/health` l'indique dans son champ `rattrapage`. Cette pipeline n'écrit jamais rien dans Stripe : lui donner
 une clé standard `sk_` serait lui confier des droits dont elle n'a aucun usage.
 
 La clé commence par `rk_` et n'est affichée qu'une fois. La coller dans
@@ -178,8 +191,12 @@ et de la semaine repartent de zéro à chaque redéploiement.
 `https://<votre-service>.up.railway.app/health` répond :
 
 ```json
-{"status": "ok", "configuration_manquante": [], "enrichissement_stripe": true}
+{"status": "ok", "configuration_manquante": [], "enrichissement_stripe": true,
+ "rattrapage": {"execute": true, "souscriptions": 274, "probleme": null}}
 ```
+
+Un `probleme` non nul dans `rattrapage` signale que les compteurs sont partis de
+zéro — le plus souvent la permission **Events (Read)** manquante sur la clé Stripe.
 
 Si `status` vaut `degraded`, la liste `configuration_manquante` nomme la variable à
 corriger. La réponse reste volontairement un code 200 : un 503 ferait échouer le
@@ -193,11 +210,11 @@ adresse morte au lieu du 503 qui déclenche le rejeu.
 ./.venv/bin/python tests/test_alertes.py
 ```
 
-139 vérifications, sans aucun appel réseau : mise en forme des montants, statuts qui
+156 vérifications, sans aucun appel réseau : mise en forme des montants, statuts qui
 doivent ou non déclencher une alerte, vérification de signature, dédoublonnage,
 neutralisation du HTML hostile dans un nom de client, totaux du jour et de la
-semaine, déclenchement des récapitulatifs (y compris après une coupure de plusieurs
-jours).
+semaine, déclenchement des récapitulatifs (y compris après une coupure de plusieurs jours),
+et rattrapage de l'historique.
 
 ## Ce qui se passe si quelque chose tombe
 
@@ -219,6 +236,7 @@ jours).
 | `app/alertes.py` | décide ce qui mérite une alerte, et met les messages en forme |
 | `app/telegram.py` | poste sur Telegram, distingue panne passagère et erreur définitive |
 | `app/recap.py` | déclenche les récapitulatifs aux heures voulues |
+| `app/rattrapage.py` | remplit les compteurs depuis l'historique Stripe au démarrage |
 | `app/journal.py` | mémoire des évènements traités et des souscriptions comptées |
 | `app/config.py` | toutes les variables d'environnement, en un seul endroit |
 | `outils/trouver_chat_id.py` | retrouve l'identifiant du groupe Telegram |

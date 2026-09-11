@@ -67,6 +67,11 @@ RECAP_ACTIF = os.environ.get("RECAP_ACTIF", "true").strip().lower() in ("1", "tr
 # voir app/alertes.py pour la raison.
 STRIPE_TIMEOUT = int(os.environ.get("STRIPE_TIMEOUT") or 8)
 
+# Nombre de jours d'historique Stripe relus au démarrage pour remplir les
+# compteurs (voir app/rattrapage.py). 7 jours couvrent le total de la journée ET
+# celui des 7 derniers jours du bilan de minuit. 0 désactive le rattrapage.
+RATTRAPAGE_JOURS = int(os.environ.get("RATTRAPAGE_JOURS") or 7)
+
 PORT = int(os.environ.get("PORT") or 8000)
 
 

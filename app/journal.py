@@ -111,11 +111,15 @@ def enregistrer_souscription(
     db_path: Path, event_id: str, subscription_id: str | None, client: str | None,
     montant: int | None, devise: str | None, periodicite: str | None, jour: str,
     partiel: bool = False,
-) -> None:
-    """INSERT OR IGNORE : un rejeu Stripe du même évènement ne recompte pas."""
+) -> bool:
+    """INSERT OR IGNORE : un rejeu Stripe du même évènement ne recompte pas.
+
+    Retourne True seulement si une ligne a vraiment été créée, pour que l'appelant
+    puisse annoncer un décompte honnête plutôt que le nombre d'évènements examinés.
+    """
     conn = _connexion(db_path)
     try:
-        conn.execute(
+        curseur = conn.execute(
             "INSERT OR IGNORE INTO souscriptions (event_id, subscription_id, client, "
             "montant, devise, periodicite, jour, partiel, horodatage) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -123,6 +127,7 @@ def enregistrer_souscription(
              1 if partiel else 0, datetime.now(timezone.utc).isoformat()),
         )
         conn.commit()
+        return curseur.rowcount > 0
     finally:
         conn.close()
 
