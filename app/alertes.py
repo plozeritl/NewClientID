@@ -311,8 +311,8 @@ def _message_nouvel_abonnement(
     # notification Telegram. En mode test, il annonce quand même un abonnement —
     # un titre « aucune souscription réelle aujourd'hui » sous une fusée serait
     # une alerte qui se contredit elle-même.
-    if etat:
-        titre = f"🎉 Nouvel abonnement (test) · {etat}"
+    if not livemode:
+        titre = "🧪 Abonnement de test" + (f" · {etat}" if etat else "")
     elif cumul:
         titre = f"🎉 {cumul}"
     else:
@@ -378,9 +378,10 @@ def rendre(contexte: dict, cumul: str | None = None, etat: str | None = None) ->
     message = _message_nouvel_abonnement(
         contexte["abonnement"], contexte["livemode"], analyser(contexte), cumul, etat
     )
-    if contexte["livemode"]:
-        return message
-    return f"🧪 <i>mode test Stripe</i>\n{message}"
+    # Pas de bandeau séparé au-dessus : il prenait la première ligne, la seule que
+    # Telegram montre dans la notification, et repoussait les chiffres. Le mode
+    # test est signalé dans le titre lui-même (« 🧪 Abonnement de test »).
+    return message
 
 
 def formater(evenement: dict, cumul: str | None = None,
@@ -501,27 +502,17 @@ def _volume_lisible(volume: dict | None) -> str | None:
 
 
 def ligne_indicateurs(etat: dict | None) -> list[str]:
-    """La deuxième ligne : MRR et abonnés actifs. Vide tant que Stripe ne donne pas
-    accès aux abonnements."""
-    if not etat:
+    """La deuxième ligne : les abonnés actifs. Vide tant que Stripe ne donne pas
+    accès aux abonnements.
+
+    Le MRR recalculé n'y figure plus : à +3,6 % du tableau de bord Stripe, il a été
+    jugé trop faux pour être affiché (12/09/2026). Il reste calculé et visible dans
+    /health, à titre indicatif, jusqu'à ce que l'Analytics API de Stripe — la seule
+    à servir le chiffre exact — soit ouverte sur ce compte.
+    """
+    if not etat or etat.get("abonnes") is None:
         return []
-    morceaux = []
-    # « ≈ » : ce MRR est recalculé ici, pas lu chez Stripe. Il s'écarte de quelques
-    # pourcents du tableau de bord (taux de change fixe, règles internes de Stripe
-    # non documentées). Le signe disparaîtra le jour où l'Analytics API de Stripe
-    # sera ouverte sur ce compte.
-    mrr = etat.get("mrr_eur")
-    if mrr is not None:
-        morceaux.append(f"MRR ≈ <b>{_montant(mrr, 'eur')}</b>")
-    else:
-        # Une devise non convertible : on montre le détail plutôt que rien.
-        detail = _formuler_groupes(etat.get("mrr") or {})
-        if detail:
-            morceaux.append(f"MRR <b>{' + '.join(detail)}</b>")
-    abonnes = etat.get("abonnes")
-    if abonnes is not None:
-        morceaux.append(f"<b>{abonnes}</b> abonnés actifs")
-    return [" · ".join(morceaux)] if morceaux else []
+    return [f"<b>{etat['abonnes']}</b> abonnés actifs"]
 
 
 def message_point_du_jour(heure: int, totaux_jour: dict,

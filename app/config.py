@@ -50,12 +50,13 @@ EVENEMENTS = [
 # pas « exactement une fois »).
 DB_PATH = Path(os.environ.get("DB_PATH") or str(BASE_DIR / "data" / "alertes.db"))
 
-# Heures (Paris) des récapitulatifs postés sur Telegram. 0 est le bilan de minuit :
-# il clôt la journée écoulée et ajoute les sept derniers jours. Les autres font le
-# point sur la journée en cours depuis minuit.
+# Heures (Paris) des récapitulatifs postés sur Telegram. Par défaut, seul le bilan
+# de minuit (0) : il clôt la journée écoulée et ajoute les sept derniers jours.
+# D'autres heures (ex. "0,12,18") ajoutent des points sur la journée en cours ;
+# retirés le 12/09/2026 à la demande de l'utilisateur, jugés trop fréquents.
 RECAP_HEURES = sorted({
     int(h.strip())
-    for h in os.environ.get("RECAP_HEURES", "0,12,16,18,20,22").split(",")
+    for h in os.environ.get("RECAP_HEURES", "0").split(",")
     if h.strip().isdigit() and 0 <= int(h.strip()) <= 23
 })
 

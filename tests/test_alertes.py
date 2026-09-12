@@ -118,8 +118,9 @@ def test_mode_test_signale() -> None:
     texte = alertes.formater(
         _evenement("customer.subscription.created", ABONNEMENT, livemode=False)
     )
-    verifier(texte.startswith("🧪"), "le message de test est signalé dès la première ligne")
-    verifier("mode test Stripe" in texte, "le message dit qu'il vient du mode test")
+    verifier(texte.startswith("<b>🧪"), "le message de test est signalé dès la première ligne")
+    verifier("Abonnement de test" in texte.split("\n")[0],
+             "et dans le titre lui-même, sans bandeau qui repousserait les chiffres")
     verifier("dashboard.stripe.com/test/subscriptions/sub_123" in texte,
              "lien vers le dashboard en mode test")
 
@@ -961,12 +962,12 @@ def test_volume_net() -> None:
     3 325 € encaissés en 487 € — un chiffre faux de 85 %."""
     print("\nVolume net encaissé")
     _FauxMouvements.contenu = [
-        {"type": "charge", "currency": "eur", "amount": 250000},
-        {"type": "payment", "currency": "eur", "amount": 82513},
-        {"type": "refund", "currency": "eur", "amount": -1900},
-        {"type": "refund_failure", "currency": "eur", "amount": 500},  # remboursement raté : l'argent revient
-        {"type": "payout", "currency": "eur", "amount": -279243},   # virement bancaire
-        {"type": "stripe_fee", "currency": "eur", "amount": -4507}, # frais Stripe
+        {"type": "charge", "currency": "eur", "amount": 250000, "net": 246000},   # 40 € de frais
+        {"type": "payment", "currency": "eur", "amount": 82513, "net": 81213},    # 13 € de frais
+        {"type": "refund", "currency": "eur", "amount": -1900, "net": -1900},
+        {"type": "refund_failure", "currency": "eur", "amount": 500, "net": 500},  # remboursement raté : l'argent revient
+        {"type": "payout", "currency": "eur", "amount": -279243, "net": -279243}, # virement bancaire
+        {"type": "stripe_fee", "currency": "eur", "amount": -4507, "net": -4507}, # frais facturés à part
     ]
     _FauxMouvements.erreur = None
     _FauxMouvements.appels = 0
@@ -975,14 +976,14 @@ def test_volume_net() -> None:
     volume._lister_mouvements, config.STRIPE_API_KEY = _FauxMouvements.lister, "rk_factice"
     try:
         net = volume.net_de_la_journee(datetime.now(alertes.FUSEAU))
-        verifier(net == {"eur": 331113},
-                 "2 500 + 825,13 - 19 + 5 = 3 311,13 € : ni le virement ni les frais n'entrent, "
-                 "et un remboursement raté revient dans le volume")
+        verifier(net == {"eur": 325813},
+                 "2 460 + 812,13 - 19 + 5 = 3 258,13 € : frais de transaction déduits, "
+                 "virement et frais à part exclus, remboursement raté revenu")
         volume.net_de_la_journee(datetime.now(alertes.FUSEAU))
         verifier(_FauxMouvements.appels == 1,
                  "la même période n'est pas relue dans les 5 minutes (panne Telegram)")
 
-        verifier(alertes._volume_lisible(net) == "3 311,13 €", "le montant s'affiche bien")
+        verifier(alertes._volume_lisible(net) == "3 258,13 €", "le montant s'affiche bien")
 
         _FauxMouvements.contenu = []
         volume._cache.clear()
@@ -1028,17 +1029,12 @@ def test_deuxieme_ligne_mrr() -> None:
     lignes = texte.split("\n")
     verifier("37 nouvelles souscriptions" in lignes[0] and "3 325,13 € net" in lignes[0],
              "1re ligne : souscriptions du jour et volume net")
-    verifier("MRR ≈" in lignes[1] and "128 706,92 €" in lignes[1],
-             "2e ligne : le MRR, marqué ≈ car recalculé")
+    verifier("MRR" not in texte,
+             "le MRR recalculé n'est plus affiché : trop éloigné du tableau de bord")
     verifier("3738" in lignes[1] and "abonnés actifs" in lignes[1],
              "2e ligne : les abonnés actifs")
     verifier(alertes.ligne_indicateurs(None) == [],
              "sans accès aux abonnements, la 2e ligne disparaît simplement")
-
-    sans_conversion = {"mrr": {"eur": 100, "gbp": 100}, "mrr_eur": None, "abonnes": 2}
-    ligne = alertes.ligne_indicateurs(sans_conversion)[0]
-    verifier("£" in ligne and "€" in ligne,
-             "une devise non convertible : le détail par devise plutôt que rien")
 
 
 def test_mensualisation() -> None:

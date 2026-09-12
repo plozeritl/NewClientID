@@ -42,44 +42,38 @@ Démarré le 11/09/2026
 Voir dans Stripe
 ```
 
-Cinq points dans la journée, plus un bilan la nuit — tout à l'heure de Paris. Deux
-lignes : la journée (souscriptions et volume net), puis l'état du parc (MRR et
-abonnés actifs).
+Et un bilan chaque nuit à minuit, heure de Paris. Deux lignes : la journée écoulée
+(souscriptions et volume net), puis les abonnés actifs.
 
 ```
-📊 20h · 37 nouvelles souscriptions · 3 325,13 € net
-MRR ≈ 128 706,92 € · 3738 abonnés actifs
+🌙 Bilan du vendredi 11 septembre · 47 nouvelles souscriptions · 4 372,55 € net
+3690 abonnés actifs
+
+7 derniers jours : 279 nouvelles souscriptions · 22 112,00 € net
 ```
 
-```
-🌙 Bilan du vendredi 11 septembre · 37 nouvelles souscriptions · 3 325,13 € net
-MRR ≈ 128 706,92 € · 3738 abonnés actifs
-
-7 derniers jours : 269 nouvelles souscriptions · 20 154,00 € net
-```
-
-Le **≈** devant le MRR est volontaire : il est recalculé ici à partir des
-abonnements, pas lu chez Stripe, et s'écarte de quelques pourcents du tableau de
-bord (taux de change fixe `TAUX_EUR_USD`, règles internes de Stripe non
-documentées). Le chiffre exact n'est servi que par l'Analytics API de Stripe, en
-préversion fermée — le jour où elle s'ouvre sur ce compte, le ≈ disparaît.
+Le MRR n'est pas affiché : recalculé à partir des abonnements, il s'écartait de
+quelques pourcents du tableau de bord Stripe (taux de change fixe, règles internes
+non documentées) et a été jugé trop peu fiable. Le chiffre exact n'est servi que
+par l'Analytics API de Stripe, en préversion fermée. Il reste calculé à titre
+indicatif dans `/health` (`mrr_et_abonnes.mrr_eur_indicatif`).
 
 ### Trois chiffres qui ne mesurent pas la même chose
 
 | | Ce que c'est | D'où ça vient |
 |---|---|---|
 | **montant souscrit** (alertes) | le prix catalogue des nouvelles souscriptions du jour | les évènements d'abonnement |
-| **volume net** (récapitulatifs) | l'argent réellement entré, renouvellements compris, moins les remboursements | les mouvements du solde Stripe |
-| **MRR** (récapitulatifs) | le revenu mensuel récurrent de tout le parc d'abonnés | la liste des abonnements |
+| **volume net** (bilan) | l'argent réellement entré, renouvellements compris, moins remboursements et frais Stripe | les mouvements du solde Stripe |
+| **abonnés actifs** (bilan) | les clients avec un abonnement actif payant | la liste des abonnements |
 
 Un abonnement démarré en essai gratuit compte dans le premier et pas dans le
 second : rien n'a encore été prélevé. Le libellé ne dit donc jamais « encaissé »
 pour le montant souscrit.
 
-Le volume net exclut deux choses qui ressemblent à des sorties d'argent sans en
-être : les **virements vers votre banque** (l'argent change de poche) et les **frais
-Stripe** (ils se déduisent du net bancaire, pas du volume des ventes). Les compter
-faisait tomber une journée à 3 325 € encaissés à 487 € — un chiffre faux de 85 %.
+Le volume net suit la définition de Stripe : ventes moins remboursements, litiges
+**et frais Stripe**. Il exclut les **virements vers votre banque**, qui ressemblent à
+des sorties d'argent sans en être (l'argent change de poche) : les compter faisait
+tomber une journée à 3 325 € encaissés à 487 € — un chiffre faux de 85 %.
 
 ### Règles de comptage
 
@@ -101,12 +95,12 @@ annoncerait « 1re souscription du jour » sur une journée qui en compte déjà
 trente-sept. Ce rattrapage n'envoie aucune alerte et ne compte jamais deux fois la
 même souscription. Réglable via `RATTRAPAGE_JOURS` (0 pour le désactiver).
 
-Le service peut redémarrer sans rien perdre. S'il était arrêté à 16h, le
-récapitulatif manqué part au retour ; si plusieurs points du jour sont en retard, un
-seul est envoyé. Les bilans de minuit partent tous — jusqu'à 3 jours en arrière —
-car chacun est la seule trace chiffrée de sa journée.
+Le service peut redémarrer sans rien perdre : un bilan de minuit manqué part au
+retour, jusqu'à 3 jours en arrière, car chacun est la seule trace chiffrée de sa
+journée.
 
-Pour changer les heures ou tout désactiver : `RECAP_HEURES` et `RECAP_ACTIF`.
+Pour ajouter des points dans la journée (`RECAP_HEURES=0,12,18`) ou tout
+désactiver (`RECAP_ACTIF=false`).
 
 ## Mise en route
 
@@ -158,7 +152,7 @@ Dans Stripe : **Développeurs → Clés API → Créer une clé restreinte**, en
 | **Products** → Read | écrire « ID by Rivoli — Standard » plutôt que « rivoli_standard » |
 | **Events** → Read | relire l'historique au démarrage, pour que les compteurs ne partent pas de zéro |
 | **Balance transactions** → Read | le volume net réellement encaissé |
-| **Subscriptions** → Read | le MRR et le nombre d'abonnés actifs |
+| **Subscriptions** → Read | le nombre d'abonnés actifs |
 
 Chaque permission manquante retire une ligne des messages sans rien casser, et
 `/health` dit laquelle : `rattrapage` (Events), `volume_net` (Balance transactions),
@@ -260,7 +254,7 @@ et rattrapage de l'historique.
 | `app/recap.py` | déclenche les récapitulatifs aux heures voulues |
 | `app/rattrapage.py` | remplit les compteurs depuis l'historique Stripe au démarrage |
 | `app/volume.py` | lit le volume net encaissé dans les mouvements du solde Stripe |
-| `app/abonnes.py` | recalcule le MRR et compte les abonnés actifs |
+| `app/abonnes.py` | compte les abonnés actifs (et un MRR indicatif, visible dans /health) |
 | `app/stripe_client.py` | configure les deux clients Stripe (webhook rapide, tâches de fond patientes) |
 | `app/journal.py` | mémoire des évènements traités et des souscriptions comptées |
 | `app/config.py` | toutes les variables d'environnement, en un seul endroit |

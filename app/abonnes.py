@@ -40,7 +40,10 @@ _cache: dict = {"instant": 0.0, "valeur": None}
 # Repris par /health : un MRR absent des messages doit pouvoir s'expliquer d'un
 # coup d'œil, sans aller lire les journaux de Railway.
 ETAT: dict = {"disponible": None, "probleme": None, "paliers_non_chiffres": 0,
-              "calcule_le": None, "duree_s": None}
+              "calcule_le": None, "duree_s": None,
+              # Le MRR recalculé n'est plus affiché dans les messages (trop
+              # éloigné du tableau de bord), mais reste consultable ici.
+              "mrr_eur_indicatif": None}
 
 JOURS_PAR_MOIS = 365 / 12
 
@@ -220,6 +223,7 @@ def etat() -> dict | None:
     valeur = {"mrr": mrr, "mrr_eur": _en_euros(mrr), "abonnes": len(clients_actifs)}
     _cache.update(instant=time.time(), valeur=valeur)
     ETAT.update(disponible=True, probleme=None, paliers_non_chiffres=paliers,
+                mrr_eur_indicatif=valeur["mrr_eur"],
                 calcule_le=datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 duree_s=round(time.monotonic() - debut, 1))
     if paliers:

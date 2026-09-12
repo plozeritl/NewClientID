@@ -7,14 +7,17 @@ est l'argent réellement entré, renouvellements compris, moins les remboursemen
 
 C'est la même définition que le « Net volume » du tableau de bord Stripe :
   ventes (charge, payment) − remboursements, litiges et annulations, + les
-  remboursements qui ont échoué (l'argent revient).
+  remboursements qui ont échoué (l'argent revient) — ET moins les frais Stripe
+  prélevés sur chaque transaction. D'où le champ `net` de chaque mouvement
+  (= `amount` − `fee`), et non `amount` : sommer les montants bruts donnait un
+  volume gonflé d'environ 5 % (3 431 € au lieu de 3 268 € le 12/09/2026).
 
 Ce qui n'en fait PAS partie, et qui a failli fausser le calcul :
   - `payout`   : le virement vers le compte bancaire. L'argent change de poche,
                  il n'est pas perdu. Compté comme une sortie, il transformait
                  3 325 € encaissés en 487 € — un chiffre faux de 85 %.
-  - `stripe_fee` : les frais de Stripe, qui se déduisent du net bancaire mais pas
-                 du volume des ventes.
+  - `stripe_fee` : les frais facturés à part (Billing, Radar...), qui ne sont
+                 pas rattachés à une vente.
 
 Les montants sont dans la devise de règlement du compte : Stripe a déjà converti
 les paiements en dollars, ce qui donne un montant unique.
@@ -82,7 +85,8 @@ def net_sur_periode(premier_jour: datetime, dernier_jour: datetime) -> dict[str,
             if nature not in VENTES and nature not in RETOURS:
                 continue
             devise = mouvement.get("currency") or ""
-            totaux[devise] = totaux.get(devise, 0) + (mouvement.get("amount") or 0)
+            # `net`, pas `amount` : les frais Stripe de la transaction sont déduits.
+            totaux[devise] = totaux.get(devise, 0) + (mouvement.get("net") or 0)
     except Exception as exc:
         motif = ("permission « Balance transactions → Read » manquante"
                  if isinstance(exc, stripe_client.stripe.PermissionError)
