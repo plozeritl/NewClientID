@@ -639,7 +639,7 @@ def _banc_recap(db, heures, instant):
     envois: list = []
     recap.telegram.envoyer = lambda jeton, chat_id, texte: envois.append(texte)
     recap._maintenant = lambda: instant
-    recap.abonnes.etat = lambda: {"mrr": {"eur": 100}, "mrr_eur": 100, "abonnes": 1}
+    recap.abonnes.etat = lambda: {"abonnes": 1}
     recap.volume.net_sur_periode = lambda a, b: {"eur": 0}
     config.RECAP_HEURES, config.DB_PATH = heures, db
 
@@ -714,8 +714,8 @@ def test_coupure_de_plusieurs_jours() -> None:
         verifier([c for c in envoyes if not c.endswith(" 0")] == ["2026-09-12 20"],
                  "mais un seul point du jour, le plus récent")
         anciens = [t for t in envois if "Bilan du mercredi 9" in t or "Bilan du jeudi 10" in t]
-        verifier(anciens and all("MRR" not in t for t in anciens),
-                 "les bilans rattrapés des jours passés ne portent pas le MRR d'aujourd'hui")
+        verifier(anciens and all("abonnés actifs" not in t for t in anciens),
+                 "les bilans rattrapés des jours passés ne portent pas les abonnés d'aujourd'hui")
     finally:
         nettoyer()
 
@@ -1021,10 +1021,10 @@ def test_volume_net_indisponible() -> None:
 
 
 
-def test_deuxieme_ligne_mrr() -> None:
-    print("\nDeuxième ligne : MRR et abonnés")
+def test_deuxieme_ligne_abonnes() -> None:
+    print("\nDeuxième ligne : abonnés actifs")
     t = {"nombre": 37, "groupes": {"eur": 92976}, "non_chiffrables": 0, "partiels": 0}
-    etat = {"mrr": {"eur": 6636882, "usd": 7897713}, "mrr_eur": 12870692, "abonnes": 3738}
+    etat = {"abonnes": 3738}
     texte = alertes.message_point_du_jour(20, t, {"eur": 332513}, etat)
     lignes = texte.split("\n")
     verifier("37 nouvelles souscriptions" in lignes[0] and "3 325,13 € net" in lignes[0],
@@ -1037,103 +1037,36 @@ def test_deuxieme_ligne_mrr() -> None:
              "sans accès aux abonnements, la 2e ligne disparaît simplement")
 
 
-def test_mensualisation() -> None:
-    """Les conventions de Stripe, vérifiées sur le vrai compte le 11/09/2026 : un
-    abonnement de 28 jours compte pour un mois plein, sans prorata."""
-    print("\nMensualisation")
-    m = abonnes._mensualiser
-    verifier(m(1900, "month", 1) == 1900, "mensuel : inchangé")
-    verifier(m(19000, "year", 1) == 19000 / 12, "annuel : divisé par 12")
-    verifier(m(5700, "month", 3) == 1900, "trimestriel : divisé par 3")
-    verifier(m(1900, "day", 28) == 1900, "28 jours = un mois, comme Stripe")
-    verifier(m(1900, "day", 30) == 1900, "30 jours aussi")
-    verifier(abs(m(700, "day", 7) - 700 * 365 / 12 / 7) < 0.01, "7 jours : au prorata")
-    verifier(abs(m(700, "week", 1) - 700 * 365 / 12 / 7) < 0.01, "hebdomadaire : idem")
-
-
-def test_mrr_abonnement() -> None:
-    print("\nMRR d'un abonnement")
-    def abo(**extra):
-        base = {"customer": "cus_1", "status": "active", "items": {"data": [{
-            "quantity": 1, "price": {"unit_amount": 1900, "currency": "eur",
-                                     "recurring": {"interval": "month", "interval_count": 1}}}]}}
-        base.update(extra); return base
-
-    verifier(abonnes._mrr_abonnement(abo())[:2] == ("eur", 1900.0), "cas simple")
-    remise = abo(discounts=[{"coupon": {"percent_off": 50}}])
-    verifier(abonnes._mrr_abonnement(remise)[1] == 950.0, "remise de 50 % (ancien format)")
-    remise2 = abo(discounts=[{"source": {"type": "coupon", "coupon": {"percent_off": 50}}}])
-    verifier(abonnes._mrr_abonnement(remise2)[1] == 950.0,
-             "remise de 50 % au format 2026 (source.coupon) — celui du vrai compte")
-    identifiants = abo(discounts=["di_123"])   # non développée : identifiant brut
-    verifier(abonnes._mrr_abonnement(identifiants)[1] == 1900.0,
-             "une remise non développée est ignorée au lieu de faire planter le calcul")
-    expiree = abo(discounts=[{"end": 1, "source": {"coupon": {"percent_off": 50}}}])
-    verifier(abonnes._mrr_abonnement(expiree)[1] == 1900.0, "une remise terminée ne compte plus")
-
-    annuel = abo(discounts=[{"source": {"coupon": {"amount_off": 2000}}}])
-    annuel["items"]["data"][0]["price"] = {"unit_amount": 19000, "currency": "eur",
-                                           "recurring": {"interval": "year", "interval_count": 1}}
-    verifier(abs(abonnes._mrr_abonnement(annuel)[1] - (19000 - 2000) / 12) < 0.01,
-             "20 € de remise sur un annuel : 1,67 €/mois en moins, pas 20 €/mois")
-
-    usage = abo(); usage["items"]["data"][0]["price"]["recurring"]["usage_type"] = "metered"
-    verifier(abonnes._mrr_abonnement(usage)[1] == 0, "le facturé à l'usage n'a pas de MRR")
-    paliers = abo(); paliers["items"]["data"][0]["price"]["unit_amount"] = None
-    devise, mensuel, non_chiffre = abonnes._mrr_abonnement(paliers)
-    verifier(mensuel == 0 and non_chiffre, "un prix à paliers est signalé comme non chiffré")
-
-
-def test_mrr_en_euros() -> None:
-    print("\nConversion du MRR en euros")
-    vrai = config.TAUX_EUR_USD
-    config.TAUX_EUR_USD = 1.16
-    try:
-        verifier(abonnes._en_euros({"eur": 11600, "usd": 11600}) == 21600,
-                 "116 € + 116 $ = 116 + 100 = 216 € au taux 1,16")
-        verifier(abonnes._en_euros({"eur": 100, "gbp": 100}) is None,
-                 "une devise inconnue : pas de total plutôt qu'un total amputé")
-    finally:
-        config.TAUX_EUR_USD = vrai
-
-
-def test_abonnes_actifs_sans_impayes() -> None:
-    """Le tableau de bord Stripe ne compte pas les impayés parmi les abonnés
-    actifs (3 701 contre 4 061 en les incluant, vérifié le 11/09/2026) — mais
-    leur MRR, lui, est bien compté, conformément à la définition de Stripe."""
-    print("\nAbonnés actifs et impayés")
+def test_abonnes_actifs() -> None:
+    """Un abonné actif est un client avec un abonnement 'active' qui facture
+    quelque chose : deux abonnements ne font qu'un client, un abonnement gratuit
+    ne compte pas, un prix à paliers compte (il est facturé)."""
+    print("\nAbonnés actifs")
     def prix(montant): return {"unit_amount": montant, "currency": "eur",
                                "recurring": {"interval": "month", "interval_count": 1}}
-    contenu = {
-        "active": [
-            {"customer": "cus_a", "status": "active",
-             "items": {"data": [{"quantity": 1, "price": prix(1000)}]}},
-            {"customer": "cus_paliers", "status": "active",          # prix à paliers
-             "items": {"data": [{"quantity": 1, "price": prix(None)}]}},
-        ],
-        "past_due": [
-            {"customer": "cus_b", "status": "past_due",
-             "items": {"data": [{"quantity": 1, "price": prix(1000)}]}},
-        ],
-    }
-    def lister(statut):
-        return iter([_FauxEvenement(c) for c in contenu[statut]])
-
-    vrai, vraie_cle = abonnes._lister_abonnements, config.STRIPE_API_KEY
-    abonnes._lister_abonnements, config.STRIPE_API_KEY = lister, "rk_factice"
+    contenu = [
+        {"customer": "cus_a", "items": {"data": [{"price": prix(1000)}]}},
+        {"customer": "cus_a", "items": {"data": [{"price": prix(500)}]}},      # même client
+        {"customer": "cus_paliers", "items": {"data": [{"price": prix(None)}]}},
+        {"customer": "cus_gratuit", "items": {"data": [{"price": prix(0)}]}},
+    ]
+    vrai, vraie_cle = abonnes._lister_abonnements_actifs, config.STRIPE_API_KEY
+    abonnes._lister_abonnements_actifs = lambda: iter([_FauxEvenement(c) for c in contenu])
+    config.STRIPE_API_KEY = "rk_factice"
     abonnes._cache.update(instant=0.0, valeur=None)
     try:
-        e = abonnes.etat()
-        verifier(e["mrr"]["eur"] == 2000, "le MRR compte l'actif ET l'impayé")
-        verifier(e["abonnes"] == 2,
-                 "les abonnés actifs : l'actif et celui à paliers (il paie), pas l'impayé")
-        verifier(abonnes.ETAT["paliers_non_chiffres"] == 1,
-                 "le prix à paliers non chiffré est signalé dans l'état")
-    finally:
-        abonnes._lister_abonnements, config.STRIPE_API_KEY = vrai, vraie_cle
+        verifier(abonnes.etat() == {"abonnes": 2}, "2 abonnés : cus_a (une fois) et le prix à paliers")
+        verifier(abonnes.ETAT["disponible"] is True, "l'état dit que le compte est disponible")
+
         abonnes._cache.update(instant=0.0, valeur=None)
-
-
+        def echoue(): raise RuntimeError("panne")
+        abonnes._lister_abonnements_actifs = echoue
+        verifier(abonnes.etat() is None, "une panne renvoie None sans exception")
+        verifier(abonnes.ETAT["disponible"] is False and abonnes.ETAT["calcule_le"] is None,
+                 "et l'état ne garde pas la date du dernier succès, qui ferait croire à un chiffre à jour")
+    finally:
+        abonnes._lister_abonnements_actifs, config.STRIPE_API_KEY = vrai, vraie_cle
+        abonnes._cache.update(instant=0.0, valeur=None)
 
 if __name__ == "__main__":
     for test in [
@@ -1152,9 +1085,8 @@ if __name__ == "__main__":
         test_coupure_de_plusieurs_jours,
         test_premier_demarrage_silencieux, test_mode_test_non_compte,
         test_cumul_sur_deux_souscriptions, test_volume_lisible_en_une_ligne,
-        test_volume_net, test_volume_net_indisponible, test_deuxieme_ligne_mrr,
-        test_mensualisation, test_mrr_abonnement, test_mrr_en_euros,
-        test_abonnes_actifs_sans_impayes,
+        test_volume_net, test_volume_net_indisponible, test_deuxieme_ligne_abonnes,
+        test_abonnes_actifs,
         test_rattrapage, test_rattrapage_sans_appels_de_libelles, test_rattrapage_sans_cle, test_rattrapage_jamais_bloquant,
     ]:
         test()

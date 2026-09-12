@@ -52,11 +52,10 @@ Et un bilan chaque nuit à minuit, heure de Paris. Deux lignes : la journée éc
 7 derniers jours : 279 nouvelles souscriptions · 22 112,00 € net
 ```
 
-Le MRR n'est pas affiché : recalculé à partir des abonnements, il s'écartait de
-quelques pourcents du tableau de bord Stripe (taux de change fixe, règles internes
-non documentées) et a été jugé trop peu fiable. Le chiffre exact n'est servi que
-par l'Analytics API de Stripe, en préversion fermée. Il reste calculé à titre
-indicatif dans `/health` (`mrr_et_abonnes.mrr_eur_indicatif`).
+Pas de MRR : recalculé à partir des abonnements, il s'écartait de quelques
+pourcents du tableau de bord Stripe (taux de change, règles internes non
+documentées) et a été retiré. Le chiffre exact n'est servi que par l'Analytics API
+de Stripe, en préversion fermée sur ce compte.
 
 ### Trois chiffres qui ne mesurent pas la même chose
 
@@ -156,7 +155,7 @@ Dans Stripe : **Développeurs → Clés API → Créer une clé restreinte**, en
 
 Chaque permission manquante retire une ligne des messages sans rien casser, et
 `/health` dit laquelle : `rattrapage` (Events), `volume_net` (Balance transactions),
-`mrr_et_abonnes` (Subscriptions). Cette pipeline n'écrit jamais rien dans Stripe : lui donner
+`abonnes` (Subscriptions). Cette pipeline n'écrit jamais rien dans Stripe : lui donner
 une clé standard `sk_` serait lui confier des droits dont elle n'a aucun usage.
 
 La clé commence par `rk_` et n'est affichée qu'une fois. La coller dans
@@ -254,7 +253,7 @@ et rattrapage de l'historique.
 | `app/recap.py` | déclenche les récapitulatifs aux heures voulues |
 | `app/rattrapage.py` | remplit les compteurs depuis l'historique Stripe au démarrage |
 | `app/volume.py` | lit le volume net encaissé dans les mouvements du solde Stripe |
-| `app/abonnes.py` | compte les abonnés actifs (et un MRR indicatif, visible dans /health) |
+| `app/abonnes.py` | compte les abonnés actifs |
 | `app/stripe_client.py` | configure les deux clients Stripe (webhook rapide, tâches de fond patientes) |
 | `app/journal.py` | mémoire des évènements traités et des souscriptions comptées |
 | `app/config.py` | toutes les variables d'environnement, en un seul endroit |

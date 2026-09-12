@@ -68,12 +68,6 @@ RECAP_ACTIF = os.environ.get("RECAP_ACTIF", "true").strip().lower() in ("1", "tr
 # voir app/alertes.py pour la raison.
 STRIPE_TIMEOUT = int(os.environ.get("STRIPE_TIMEOUT") or 8)
 
-# Taux de change euro/dollar : combien de dollars vaut 1 euro. Sert uniquement à
-# afficher un MRR unique en euros plutôt qu'une addition impossible « X € + Y $ ».
-# C'est un taux FIXE, à réviser à la main : Stripe, lui, utilise ses taux du jour,
-# donc le chiffre affiché s'écartera un peu du sien au fil du temps.
-TAUX_EUR_USD = float(os.environ.get("TAUX_EUR_USD") or "1.16")
-
 # Nombre de jours d'historique Stripe relus au démarrage pour remplir les
 # compteurs (voir app/rattrapage.py). 7 jours couvrent le total de la journée ET
 # celui des 7 derniers jours du bilan de minuit. 0 désactive le rattrapage.

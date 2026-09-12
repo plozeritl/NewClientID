@@ -311,6 +311,9 @@ def _message_nouvel_abonnement(
     # notification Telegram. En mode test, il annonce quand même un abonnement —
     # un titre « aucune souscription réelle aujourd'hui » sous une fusée serait
     # une alerte qui se contredit elle-même.
+    # Le mode test est signalé dans le titre lui-même, pas par un bandeau au-dessus :
+    # il prenait la première ligne, la seule que Telegram montre dans la
+    # notification, et repoussait les chiffres.
     if not livemode:
         titre = "🧪 Abonnement de test" + (f" · {etat}" if etat else "")
     elif cumul:
@@ -375,13 +378,9 @@ def evaluer(evenement: dict) -> dict | None:
 def rendre(contexte: dict, cumul: str | None = None, etat: str | None = None) -> str:
     """Le message Telegram d'un abonnement retenu. C'est ici, et seulement ici, que
     l'on interroge Stripe pour remplacer les identifiants par des noms lisibles."""
-    message = _message_nouvel_abonnement(
+    return _message_nouvel_abonnement(
         contexte["abonnement"], contexte["livemode"], analyser(contexte), cumul, etat
     )
-    # Pas de bandeau séparé au-dessus : il prenait la première ligne, la seule que
-    # Telegram montre dans la notification, et repoussait les chiffres. Le mode
-    # test est signalé dans le titre lui-même (« 🧪 Abonnement de test »).
-    return message
 
 
 def formater(evenement: dict, cumul: str | None = None,
@@ -503,13 +502,8 @@ def _volume_lisible(volume: dict | None) -> str | None:
 
 def ligne_indicateurs(etat: dict | None) -> list[str]:
     """La deuxième ligne : les abonnés actifs. Vide tant que Stripe ne donne pas
-    accès aux abonnements.
-
-    Le MRR recalculé n'y figure plus : à +3,6 % du tableau de bord Stripe, il a été
-    jugé trop faux pour être affiché (12/09/2026). Il reste calculé et visible dans
-    /health, à titre indicatif, jusqu'à ce que l'Analytics API de Stripe — la seule
-    à servir le chiffre exact — soit ouverte sur ce compte.
-    """
+    accès aux abonnements. (Le MRR recalculé a été retiré le 12/09/2026 : trop
+    éloigné du tableau de bord Stripe pour être affiché.)"""
     if not etat or etat.get("abonnes") is None:
         return []
     return [f"<b>{etat['abonnes']}</b> abonnés actifs"]
@@ -518,8 +512,8 @@ def ligne_indicateurs(etat: dict | None) -> list[str]:
 def message_point_du_jour(heure: int, totaux_jour: dict,
                           volume_net: dict | None = None,
                           indicateurs: dict | None = None) -> str:
-    """Le récapitulatif intermédiaire (12h, 16h, 18h, 20h, 22h) : la journée en cours,
-    depuis minuit.
+    """Un point sur la journée en cours, depuis minuit (désactivé par défaut :
+    RECAP_HEURES ne contient que minuit).
 
     Tout tient dans le titre, pour être lisible dans la notification. Le corps ne
     porte que les réserves éventuelles (souscriptions non chiffrables) : le répéter

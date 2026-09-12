@@ -18,7 +18,7 @@ from datetime import datetime  # noqa: E402
 EXEMPLE = {
     "id": "evt_exemple",
     "type": "customer.subscription.created",
-    "livemode": False,          # affiche le bandeau « mode test »
+    "livemode": False,          # titre « 🧪 Abonnement de test », jamais compté
     "data": {"object": {
         "id": "sub_exemple",
         "status": "active",

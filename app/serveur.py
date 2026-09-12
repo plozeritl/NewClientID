@@ -120,7 +120,7 @@ def health() -> JSONResponse:
             # Chacune de ces lignes peut manquer d'un récapitulatif sans que rien
             # ne casse : ici on voit laquelle, et pourquoi.
             "volume_net": dict(volume.ETAT),
-            "mrr_et_abonnes": dict(abonnes.ETAT),
+            "abonnes": dict(abonnes.ETAT),
         },
     )
 

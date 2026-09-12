@@ -1,8 +1,8 @@
-"""Récapitulatifs horaires postés sur Telegram.
+"""Récapitulatifs postés sur Telegram.
 
-Cinq points dans la journée (12h, 16h, 18h, 20h, 22h) donnent l'état de la journée
-en cours depuis minuit. Celui de minuit clôt la journée écoulée et y ajoute les sept
-derniers jours.
+Par défaut, un seul : le bilan de minuit, qui clôt la journée écoulée et y ajoute
+les sept derniers jours. RECAP_HEURES peut y ajouter des points sur la journée en
+cours (ex. 12h, 18h).
 
 Tout est calé sur l'heure de Paris, y compris le découpage des journées.
 
@@ -71,9 +71,9 @@ def _totaux_semaine(dernier_jour: datetime) -> dict:
 def construire(creneau: datetime) -> str:
     """Le message d'un créneau. Minuit clôt la veille ; les autres font le point sur
     la journée en cours."""
-    # Le MRR et les abonnés actifs sont ceux de l'INSTANT : ils n'ont pas de date.
-    # Un bilan rattrapé pour avant-hier les présenterait comme ceux d'avant-hier, ce
-    # qui serait faux. On ne les met que sur les messages de la journée en cours.
+    # Les abonnés actifs sont ceux de l'INSTANT : ils n'ont pas de date. Un bilan
+    # rattrapé pour avant-hier les présenterait comme ceux d'avant-hier, ce qui
+    # serait faux. On ne les met que sur les messages de la journée en cours.
     indicateurs = abonnes.etat() if creneau.date() == _maintenant().date() else None
     if creneau.hour == 0:
         veille = creneau - timedelta(days=1)
@@ -115,11 +115,11 @@ def _envoyer(creneau: datetime) -> bool:
 def verifier_une_fois(maintenant: datetime | None = None) -> list[str]:
     """Envoie ce qui est dû. Retourne les créneaux effectivement envoyés.
 
-    Quand plusieurs « points du jour » sont en retard (service arrêté une bonne
-    partie de la journée), un seul est envoyé — le plus récent, le seul encore
-    d'actualité — et les autres sont marqués sans être postés : personne n'a envie
-    de recevoir d'un coup les récapitulatifs de 12h, 16h et 18h à 19h. Les bilans de
-    minuit, eux, partent tous : chacun est la trace d'une journée différente.
+    Si des « points du jour » sont configurés et que plusieurs sont en retard
+    (service arrêté une bonne partie de la journée), un seul est envoyé — le plus
+    récent, le seul encore d'actualité — et les autres sont marqués sans être
+    postés. Les bilans de minuit, eux, partent tous : chacun est la trace d'une
+    journée différente.
     """
     maintenant = maintenant or _maintenant()
     dus = [c for c in _creneaux_a_considerer(maintenant)
@@ -145,9 +145,8 @@ def verifier_une_fois(maintenant: datetime | None = None) -> list[str]:
 
 def neutraliser_creneaux_passes() -> None:
     """Au tout premier démarrage seulement : marque comme faits les créneaux déjà
-    passés. Sans ça, un premier déploiement à 21h enverrait d'un coup les
-    récapitulatifs de minuit, 12h, 16h, 18h et 20h — sur une base vide, donc tous
-    à zéro."""
+    passés. Sans ça, un premier déploiement enverrait d'un coup les bilans des
+    jours précédents — sur une base vide, donc tous à zéro."""
     if not journal.aucun_recap_enregistre(config.DB_PATH):
         return
     maintenant = _maintenant()

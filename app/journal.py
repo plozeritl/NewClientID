@@ -205,9 +205,9 @@ def marquer_recap_envoye(db_path: Path, creneau: str) -> None:
 
 
 def aucun_recap_enregistre(db_path: Path) -> bool:
-    """Vrai au tout premier démarrage. Sert à neutraliser les créneaux déjà passés
-    ce jour-là : sans ça, un premier déploiement à 21h enverrait d'un coup les
-    récapitulatifs de 12h, 16h, 18h et 20h."""
+    """Vrai au tout premier démarrage. Sert à neutraliser les créneaux déjà
+    passés : sans ça, un premier déploiement enverrait d'un coup les bilans des
+    jours précédents, tous à zéro."""
     conn = _connexion(db_path)
     try:
         return conn.execute("SELECT 1 FROM recaps_envoyes LIMIT 1").fetchone() is None
