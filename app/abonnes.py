@@ -5,13 +5,20 @@ sert les chiffres du tableau de bord Billing, est en préversion fermée et renv
 404 sur ce compte. On compte donc nous-mêmes.
 
 Convention de Stripe, vérifiée sur le compte les 11 et 14/09/2026 : un abonné
-actif est un client dont au moins un abonnement 'active' lui coûte quelque chose
-CE MOIS-CI. Les impayés ('past_due') n'en font pas partie (3 701 affichés contre
-4 061 en les incluant). Un client avec deux abonnements compte pour un. Ne comptent
-pas : un essai gratuit, et — c'est le piège — un abonnement dont un coupon couvre
-tout le prix pendant la période en cours (« 20 € offerts » sur 19 €/mois) : Stripe
-ne le compte qu'à partir du premier mois payé. Ces cas faisaient 70 clients de
-trop le 14/09/2026 (3 755 comptés contre 3 685).
+actif est un client avec au moins un abonnement au statut 'active' dont le prix
+n'est pas nul. Les impayés ('past_due') n'en font pas partie (3 701 affichés
+contre 4 061 en les incluant). Un client avec deux abonnements compte pour un ; un
+client en essai gratuit, qui ne paie encore rien, ne compte pas.
+
+Les COUPONS NE SONT PAS DÉDUITS, et c'est voulu. Le 14/09/2026, 70 clients avaient
+un coupon couvrant 100 % du prix (presque tous « pour toujours ») ; les exclure
+donnait 3 685 quand le tableau de bord affichait 3 736, alors que les compter
+donnait 3 755 — l'écart de 19 étant le retard du tableau de bord, rafraîchi une
+fois par jour (30 activations sur la journée). Stripe compte donc un client à
+−100 % comme actif. Ne pas « corriger » ça une seconde fois.
+
+Le tableau de bord ayant jusqu'à un jour de retard, un écart de quelques dizaines
+à la hausse entre le bilan et Stripe est normal, pas une erreur.
 
 Le MRR n'est plus calculé ici : recalculé à partir des abonnements, il s'écartait
 de quelques pourcents du tableau de bord (taux de change, règles internes de
@@ -45,77 +52,21 @@ def _lister_abonnements_actifs():
     pages, avec nouvelles tentatives."""
     return stripe_client.client_fond.v1.subscriptions.list(params={
         "status": "active", "limit": 100,
-        # Les coupons sont des identifiants tant qu'on ne les développe pas ; sans
-        # eux, impossible de savoir si une remise ramène le prix à zéro.
-        "expand": ["data.discounts.source.coupon"],
     }).auto_paging_iter()
 
 
-JOURS_PAR_MOIS = 365 / 12
-
-
-def _mois_par_periode(recurring: dict) -> float:
-    """Durée d'une période de facturation, en mois. 28 à 31 jours = un mois."""
-    intervalle, nombre = recurring.get("interval"), max(1, recurring.get("interval_count") or 1)
-    if intervalle == "month":
-        return float(nombre)
-    if intervalle == "year":
-        return 12.0 * nombre
-    if intervalle == "week":
-        return 7 * nombre / JOURS_PAR_MOIS
-    if intervalle == "day":
-        return 1.0 if 28 <= nombre <= 31 else nombre / JOURS_PAR_MOIS
-    return 1.0
-
-
-def _coupon_de(remise: dict) -> dict | None:
-    """Le coupon d'une remise, sous sa forme 2026 (`source.coupon`) ou ancienne
-    (`coupon`). None s'il n'est pas développé."""
-    brut = (remise.get("source") or {}).get("coupon") or remise.get("coupon")
-    return brut if isinstance(brut, dict) else None
-
-
-def _facture_quelque_chose(abonnement: dict, maintenant: float | None = None) -> bool:
-    """Vrai si le client paie quelque chose pour la période en cours.
-
-    Une ligne à paliers ou à l'usage compte toujours (montant inconnu ici, mais bien
-    facturé). Un montant fixe compte s'il reste positif une fois les remises en
-    cours déduites : un coupon « 20 € offerts » sur un abonnement à 19 € ramène la
-    facture à zéro, et Stripe ne compte alors pas le client comme abonné actif.
-    """
-    maintenant = maintenant if maintenant is not None else datetime.now(timezone.utc).timestamp()
-    mensuel = 0.0
-    mois = 1.0
+def _facture_quelque_chose(abonnement: dict) -> bool:
+    """Vrai si au moins une ligne a un prix : montant fixe non nul, prix à paliers
+    (montant inconnu ici mais bien facturé) ou facturation à l'usage."""
     for item in (abonnement.get("items") or {}).get("data") or []:
         price = item.get("price") or {}
         recurring = price.get("recurring") or {}
         if recurring.get("usage_type") == "metered":
             return True
         unitaire = price.get("unit_amount")
-        if unitaire is None:
+        if unitaire is None or unitaire > 0:
             return True
-        mois = _mois_par_periode(recurring)
-        quantite = item.get("quantity")
-        mensuel += unitaire * (1 if quantite is None else quantite) / mois
-
-    remises = abonnement.get("discounts") or []
-    if not remises and abonnement.get("discount"):
-        remises = [abonnement["discount"]]
-    for remise in remises:
-        if not isinstance(remise, dict):
-            continue
-        fin = remise.get("end")
-        if isinstance(fin, (int, float)) and fin > 0 and fin <= maintenant:
-            continue                                  # remise terminée
-        coupon = _coupon_de(remise)
-        if not coupon:
-            continue
-        if coupon.get("percent_off"):
-            mensuel *= 1 - coupon["percent_off"] / 100
-        elif coupon.get("amount_off"):
-            # Une remise fixe s'applique par facture : ramenée au mois.
-            mensuel -= coupon["amount_off"] / mois
-    return mensuel > 0.005
+    return False
 
 
 def etat() -> dict | None:
