@@ -63,11 +63,15 @@ de Stripe, en préversion fermée sur ce compte.
 |---|---|---|
 | **montant souscrit** (alertes) | le prix catalogue des nouvelles souscriptions du jour | les évènements d'abonnement |
 | **volume net** (bilan) | l'argent réellement entré, renouvellements compris, moins remboursements et frais Stripe | les mouvements du solde Stripe |
-| **abonnés actifs** (bilan) | les clients avec un abonnement actif payant | la liste des abonnements |
+| **abonnés actifs** (bilan) | les clients avec un abonnement actif dont le prix n'est pas nul — coupons compris, comme Stripe | la liste des abonnements |
 
 Un abonnement démarré en essai gratuit compte dans le premier et pas dans le
 second : rien n'a encore été prélevé. Le libellé ne dit donc jamais « encaissé »
 pour le montant souscrit.
+
+Les abonnés actifs suivent le compteur de Stripe, qui compte un client sous coupon
+à −100 % comme actif. Le tableau de bord Stripe n'étant rafraîchi qu'une fois par
+jour, le bilan affiche normalement quelques dizaines d'abonnés de plus que lui.
 
 Le volume net suit la définition de Stripe : ventes moins remboursements, litiges
 **et frais Stripe**. Il exclut les **virements vers votre banque**, qui ressemblent à

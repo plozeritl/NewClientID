@@ -64,7 +64,11 @@ def _facture_quelque_chose(abonnement: dict) -> bool:
         if recurring.get("usage_type") == "metered":
             return True
         unitaire = price.get("unit_amount")
-        if unitaire is None or unitaire > 0:
+        if unitaire is None:
+            return True                       # prix à paliers : facturé, montant inconnu
+        quantite = item.get("quantity")
+        quantite = 1 if quantite is None else quantite
+        if unitaire * quantite > 0:           # quantité 0 = facture à zéro, pas actif
             return True
     return False
 

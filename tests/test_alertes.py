@@ -1049,13 +1049,20 @@ def test_abonnes_actifs() -> None:
         {"customer": "cus_a", "items": {"data": [{"price": prix(500)}]}},      # même client
         {"customer": "cus_paliers", "items": {"data": [{"price": prix(None)}]}},
         {"customer": "cus_gratuit", "items": {"data": [{"price": prix(0)}]}},
+        {"customer": "cus_qte0", "items": {"data": [{"price": prix(1900), "quantity": 0}]}},
+        # Coupon à -100 % pour toujours : COMPTÉ, comme Stripe le fait (vérifié le
+        # 14/09/2026 contre le tableau de bord). Ce cas verrouille la règle.
+        {"customer": "cus_100", "items": {"data": [{"price": prix(1900)}]},
+         "discounts": [{"source": {"type": "coupon", "coupon": {"percent_off": 100}}}]},
     ]
     vrai, vraie_cle = abonnes._lister_abonnements_actifs, config.STRIPE_API_KEY
     abonnes._lister_abonnements_actifs = lambda: iter([_FauxEvenement(c) for c in contenu])
     config.STRIPE_API_KEY = "rk_factice"
     abonnes._cache.update(instant=0.0, valeur=None)
     try:
-        verifier(abonnes.etat() == {"abonnes": 2}, "2 abonnés : cus_a (une fois) et le prix à paliers")
+        verifier(abonnes.etat() == {"abonnes": 3},
+                 "3 abonnés : cus_a (une fois), le prix à paliers, et le client à -100 % — "
+                 "ni le prix à 0 €, ni la quantité 0")
         verifier(abonnes.ETAT["disponible"] is True, "l'état dit que le compte est disponible")
 
         abonnes._cache.update(instant=0.0, valeur=None)
