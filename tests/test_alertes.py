@@ -1038,24 +1038,47 @@ def test_deuxieme_ligne_abonnes() -> None:
 
 
 def test_abonnes_actifs() -> None:
-    """Un abonné actif est un client avec un abonnement 'active' qui facture
-    quelque chose : deux abonnements ne font qu'un client, un abonnement gratuit
-    ne compte pas, un prix à paliers compte (il est facturé)."""
+    """Un abonné actif est un client dont un abonnement 'active' lui coûte quelque
+    chose ce mois-ci : deux abonnements ne font qu'un client, un abonnement gratuit
+    ne compte pas, un prix à paliers compte (il est facturé), et un coupon qui
+    couvre tout le prix pendant la période en cours ne compte pas — Stripe ne le
+    compte qu'au premier mois payé (70 clients d'écart constatés le 14/09/2026)."""
     print("\nAbonnés actifs")
-    def prix(montant): return {"unit_amount": montant, "currency": "eur",
-                               "recurring": {"interval": "month", "interval_count": 1}}
+    def prix(montant, **rec): return {"unit_amount": montant, "currency": "eur",
+                               "recurring": {"interval": "month", "interval_count": 1, **rec}}
+    def coupon(**c): return {"source": {"type": "coupon", "coupon": c}}
     contenu = [
         {"customer": "cus_a", "items": {"data": [{"price": prix(1000)}]}},
         {"customer": "cus_a", "items": {"data": [{"price": prix(500)}]}},      # même client
         {"customer": "cus_paliers", "items": {"data": [{"price": prix(None)}]}},
         {"customer": "cus_gratuit", "items": {"data": [{"price": prix(0)}]}},
+        # 20 € offerts sur 19 € : facture à zéro ce mois-ci -> pas actif
+        {"customer": "cus_lancement", "items": {"data": [{"price": prix(1900)}]},
+         "discounts": [coupon(amount_off=2000)]},
+        # 100 % de remise -> pas actif non plus
+        {"customer": "cus_100", "items": {"data": [{"price": prix(1900)}]},
+         "discounts": [coupon(percent_off=100)]},
+        # 50 % de remise : il paie encore -> actif
+        {"customer": "cus_moitie", "items": {"data": [{"price": prix(1900)}]},
+         "discounts": [coupon(percent_off=50)]},
+        # remise de 20 € terminée hier -> il paie plein tarif -> actif
+        {"customer": "cus_fini", "items": {"data": [{"price": prix(1900)}]},
+         "discounts": [{"end": 1, **coupon(amount_off=2000)}]},
+        # 20 € sur un ANNUEL de 190 € : 1,67 €/mois en moins, il paie -> actif
+        {"customer": "cus_annuel", "items": {"data": [{"price": prix(19000, interval="year")}]},
+         "discounts": [coupon(amount_off=2000)]},
+        # coupon non développé (identifiant) : on ne peut pas savoir, on compte
+        {"customer": "cus_inconnu", "items": {"data": [{"price": prix(1900)}]},
+         "discounts": ["di_123"]},
     ]
     vrai, vraie_cle = abonnes._lister_abonnements_actifs, config.STRIPE_API_KEY
     abonnes._lister_abonnements_actifs = lambda: iter([_FauxEvenement(c) for c in contenu])
     config.STRIPE_API_KEY = "rk_factice"
     abonnes._cache.update(instant=0.0, valeur=None)
     try:
-        verifier(abonnes.etat() == {"abonnes": 2}, "2 abonnés : cus_a (une fois) et le prix à paliers")
+        verifier(abonnes.etat() == {"abonnes": 6},
+                 "6 abonnés : cus_a (une fois), paliers, moitié, remise finie, annuel, inconnu "
+                 "— ni le gratuit, ni le mois offert, ni le 100 %")
         verifier(abonnes.ETAT["disponible"] is True, "l'état dit que le compte est disponible")
 
         abonnes._cache.update(instant=0.0, valeur=None)
